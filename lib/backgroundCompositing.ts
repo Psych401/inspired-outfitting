@@ -3,7 +3,8 @@
  * Composites AI-generated images over selected backgrounds
  */
 
-import { loadImage, imageToCanvas, canvasToDataUrl, canvasToFile } from './imageProcessing';
+import { loadImage, imageToCanvas, canvasToDataUrl, canvasToFile, dataUrlToFile } from './imageProcessing';
+import { removeBackground } from './backgroundRemoval';
 
 export type BackgroundType = 'white' | 'studio' | 'fitting-room';
 
@@ -83,26 +84,33 @@ export const compositeImageWithBackground = async (
         }
       }
       
-      // If no transparency detected, try to remove solid background (common gray/white backgrounds)
+      // If no transparency detected, use the existing background removal service
+      // This is specifically designed for Gemini outputs with plain white backgrounds
       if (!hasTransparency) {
-        // Attempt to make common background colors transparent
-        for (let i = 0; i < data.length; i += 4) {
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-          const brightness = (r + g + b) / 3;
+        console.log('🔄 Removing white background from Gemini output using background removal service...');
+        
+        try {
+          // Convert the image data URL to a File object for the background removal service
+          const imageFile = await dataUrlToFile(imageDataUrl, 'gemini-output.png');
           
-          // Remove very light backgrounds (white, light gray) or uniform gray backgrounds
-          if (brightness > 240 || (Math.abs(r - g) < 10 && Math.abs(g - b) < 10 && brightness > 200)) {
-            data[i + 3] = 0; // Set alpha to transparent
+          // Use the same background removal service we use for preprocessing
+          // This handles white/light backgrounds effectively with Replicate API or client-side fallback
+          const bgRemovalResult = await removeBackground(imageFile, false);
+          
+          if (bgRemovalResult.success && bgRemovalResult.imageDataUrl) {
+            // Load the background-removed image
+            foregroundImg = await loadImage(bgRemovalResult.imageDataUrl);
+            foregroundWidth = foregroundImg.width;
+            foregroundHeight = foregroundImg.height;
+            console.log('✅ White background removed from Gemini output using background removal service');
+          } else {
+            console.warn('⚠️ Background removal service failed, using original image:', bgRemovalResult.error);
+            // Continue with original image if removal fails
           }
+        } catch (error: any) {
+          console.warn('⚠️ Background removal service error, using original image:', error.message);
+          // Continue with original image if removal fails
         }
-        tempCtx.putImageData(imageData, 0, 0);
-        // Create new image from processed canvas and reload
-        const processedDataUrl = tempCanvas.toDataURL('image/png');
-        foregroundImg = await loadImage(processedDataUrl);
-        foregroundWidth = foregroundImg.width;
-        foregroundHeight = foregroundImg.height;
       }
     }
 
