@@ -712,12 +712,25 @@ IMPORTANT: Both images have been preprocessed:
 - You do NOT need to detect or segment the garment - it's already done
 - You do NOT need to remove backgrounds - they're already removed
 
-Your task is simplified:
-1. Identify the correct placement area on the person based on the garment type
-2. Remove the existing clothing in that area from the person
-3. Fit the preprocessed garment segment onto the person
-4. Blend seamlessly with proper lighting, shadows, and texture matching
-5. Ensure realistic proportions and natural fit
+====================================================
+CRITICAL TASK REQUIREMENTS
+====================================================
+
+Your task is to COMPLETELY REPLACE the existing clothing with the new garment. The final image MUST look like the person changed clothes, NOT like clothes were layered on top.
+
+CRITICAL REQUIREMENTS:
+1. The new garment MUST completely occlude, erase, and replace the old clothing in the target area
+2. The old clothing MUST be ENTIRELY invisible in the final result - no traces, textures, colors, or edges should remain
+3. Where the new garment covers the old clothing, the old clothing MUST be completely removed and replaced
+4. Where the new garment does NOT cover (e.g., exposed arms, legs below shorts), you MUST show natural skin - NOT remnants of the old clothing
+5. The transition between the new garment and exposed skin MUST be clean and natural
+6. The final image MUST look like the person is wearing ONLY the new garment, with no old clothing visible anywhere
+
+FAILURE EXAMPLES TO AVOID:
+❌ Jeans visible under shorts (legs below shorts must show skin, not denim)
+❌ Long sleeves visible under short sleeves (arms must show skin, not sleeve fabric)
+❌ Old shirt visible around edges of new shirt (old shirt must be completely erased)
+❌ Any texture, color, or fabric pattern from old clothing showing through
 
 ====================================================
 GARMENT TYPE: ${selection}
@@ -726,26 +739,47 @@ GARMENT TYPE: ${selection}
 Based on the preprocessed garment segment:
 
 • If "TOP" is selected:  
+  CRITICAL: The new top MUST completely replace the old top. The old top MUST be entirely invisible.
+  
   - Image 2 contains ONLY the top/upper garment
-  - Apply it to the person's upper body (shoulders → waist)
-  - Remove the person's existing top clothing
+  - Overlay it onto the person's upper body (shoulders → waist)
+  - The new top MUST occlude and completely replace the existing upper garment
+  - The old top MUST be completely erased - no fabric, texture, or color should remain visible
+  - Where the new top doesn't cover (e.g., arms, neckline, exposed skin), you MUST show natural skin
+  - EXAMPLE: If replacing a long-sleeve shirt with a t-shirt: t-shirt becomes the ONLY visible top, arms show natural skin, NO sleeve fabric should remain visible anywhere
   - Ignore any bottom clothing
 
 • If "BOTTOM" is selected:  
+  CRITICAL: The new bottom MUST completely replace the old bottom. The old bottom MUST be entirely invisible.
+  
   - Image 2 contains ONLY the bottom/lower garment
-  - Apply it to the person's lower body (waist → ankles)
-  - Remove the person's existing bottom clothing
+  - Overlay it onto the person's lower body (waist → ankles)
+  - The new bottom garment MUST occlude and completely replace the existing lower clothing
+  - The old bottom MUST be completely erased - no fabric, texture, or color should remain visible
+  - Where the new bottom doesn't cover (e.g., exposed waist, legs below shorts), you MUST show natural skin
+  - EXAMPLE: If replacing jeans with shorts: shorts become the ONLY visible garment on lower body, legs below shorts MUST show natural skin, NO denim texture or color should remain visible anywhere - the jeans MUST be completely gone
   - Ignore any top clothing
 
 • If "FULL-OUTFIT (top + bottom)" is selected:  
+  CRITICAL: Both new garments MUST completely replace the old garments. The old top and bottom MUST be entirely invisible.
+  
   - Image 2 contains both top and bottom garments
-  - Apply to both upper and lower body
-  - Remove all existing clothing in both zones
+  - Overlay both garments onto the upper and lower body
+  - Both new garments MUST occlude and completely replace the existing clothing
+  - The old top and bottom MUST be completely erased - no fabric, texture, or color should remain visible
+  - Where garments don't cover (e.g., exposed skin areas), you MUST show natural skin
+  - The old top and bottom MUST be completely removed and not visible anywhere in the final image
 
 • If "FULL BODY" is selected:  
+  CRITICAL: The new full-body garment MUST completely replace all old clothing. The old clothing MUST be entirely invisible.
+  
   - Image 2 contains a full-body garment (dress, jumpsuit, etc.)
-  - Apply to the entire body
-  - Remove all existing clothing except exposed skin, face, and hands
+  - Overlay it onto the entire body
+  - The new full-body garment MUST occlude and completely replace all existing clothing
+  - The old clothing MUST be completely erased - no fabric, texture, or color should remain visible
+  - Where the garment doesn't cover (e.g., face, hands, exposed skin), you MUST show natural skin
+  - EXAMPLE: If replacing a t-shirt and jeans with a dress: dress becomes the ONLY visible clothing, arms show natural skin, legs that the dress does not cover show natural skin, NO jean or t-shirt fabric should remain visible anywhere - the old clothing MUST be completely gone
+  - The old clothing MUST be completely removed and not visible anywhere in the final image
 
 ====================================================
 FITTING INSTRUCTIONS
@@ -753,37 +787,51 @@ FITTING INSTRUCTIONS
 
 1. Analyze the person's body shape and pose in Image 1
 2. Identify the exact placement area for the garment segment
-3. Remove existing clothing in that area completely
-4. Fit the preprocessed garment segment with:
+3. CRITICAL: Overlay the preprocessed garment segment and COMPLETELY ERASE the old clothing in that area
+4. The new garment MUST become the only visible layer - the old clothing underneath MUST be completely invisible
+5. Blend seamlessly with:
    - Correct proportions matching the person's body
    - Natural draping and folds
    - Proper lighting and shadows matching Image 1
-   - Seamless blending with the person's skin/clothing
-5. Handle occlusions (arms, hair, accessories) realistically
-6. Ensure the garment looks naturally worn, not pasted
+   - Clean transitions where the new garment replaces the old
+6. Handle occlusions (arms, hair, accessories) realistically
+7. Ensure the garment looks naturally worn, not pasted
+8. CRITICAL: In areas not covered by the new garment, show natural skin - NOT remnants of old clothing
 
 ====================================================
 QUALITY REQUIREMENTS
 ====================================================
 
+CRITICAL QUALITY STANDARDS:
 - Photorealistic result that looks natural
-- No visible seams, artifacts, or inconsistencies
+- NO traces of original clothing visible through or around the new garment
+- NO visible seams, artifacts, or inconsistencies
 - Proper lighting and shadow matching
 - Realistic fabric texture and draping
 - Natural fit that follows body contours
-- No clothing fragments or partial removals
-- Seamless integration with the person's appearance
+- The transition between garment and skin MUST be clean and natural
+- The old clothing MUST be completely invisible - no texture, color, or fabric pattern should remain
+- The final image MUST look like the person changed clothes, NOT layered clothes
+- Natural skin appearance preserved in uncovered areas (NOT old clothing remnants)
+- The final result MUST look like the person is wearing ONLY the new garment
+
+VISUAL CHECKLIST:
+✓ Old clothing completely erased in target area
+✓ No old fabric visible under or around new garment
+✓ Exposed skin areas show natural skin (not old clothing)
+✓ Clean transitions between garment and skin
+✓ Final image looks like a complete clothing change
 
 ====================================================
 OUTPUT
 ====================================================
 
-• 1 photorealistic edited image with the garment fitted on the person
+• 1 photorealistic edited image with the garment naturally integrated on the person
 • (Optional) a binary replacement mask  
 • (Optional) JSON summary: 
   { "garmentType": "${selection}", "fittingSucceeded": true/false }
 
-Focus on accurate fitting and natural appearance of the preprocessed garment segment on the person.
+CRITICAL: The final image MUST show the person wearing ONLY the new garment, with the old clothing completely removed and invisible. The result MUST look like a complete clothing change, not a layering of garments.
 `;
 
       const prompt = basePrompt;
