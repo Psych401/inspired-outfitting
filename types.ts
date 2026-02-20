@@ -1,3 +1,6 @@
+export interface NavigationProps {
+  navigate: (path: string) => void;
+}
 
 export interface User {
   name: string;

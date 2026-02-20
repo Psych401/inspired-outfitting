@@ -304,8 +304,10 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ debugInfo, isOpen, onClo
                     />
                     <button
                       onClick={() => {
+                        const url = debugInfo.imagesSentToGemini?.personImageDataUrl;
+                        if (!url) return;
                         const link = document.createElement('a');
-                        link.href = debugInfo.imagesSentToGemini.personImageDataUrl;
+                        link.href = url;
                         link.download = 'person-sent-to-gemini.png';
                         document.body.appendChild(link);
                         link.click();
@@ -325,8 +327,10 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ debugInfo, isOpen, onClo
                     />
                     <button
                       onClick={() => {
+                        const url = debugInfo.imagesSentToGemini?.garmentImageDataUrl;
+                        if (!url) return;
                         const link = document.createElement('a');
-                        link.href = debugInfo.imagesSentToGemini.garmentImageDataUrl;
+                        link.href = url;
                         link.download = 'garment-sent-to-gemini.png';
                         document.body.appendChild(link);
                         link.click();
@@ -370,8 +374,10 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ debugInfo, isOpen, onClo
                   />
                   <button
                     onClick={() => {
+                      const url = debugInfo.imageReceivedFromGemini;
+                      if (!url) return;
                       const link = document.createElement('a');
-                      link.href = debugInfo.imageReceivedFromGemini;
+                      link.href = url;
                       link.download = 'image-received-from-gemini.png';
                       document.body.appendChild(link);
                       link.click();

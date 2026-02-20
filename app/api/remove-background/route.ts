@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
           image: dataUrl,
         },
       }
-    ) as string;
+    ) as unknown as string;
 
     // Fetch the processed image
     const imageResponse = await fetch(output);

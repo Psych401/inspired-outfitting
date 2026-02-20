@@ -437,8 +437,8 @@ You must not deviate from the selected option.
 
       let foundImage = false;
       for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          const base64ImageBytes: string = part.inlineData.data;
+        if (part.inlineData?.data) {
+          const base64ImageBytes = part.inlineData.data;
           const imageUrl = `data:image/png;base64,${base64ImageBytes}`;
           setGeneratedImage(imageUrl);
           foundImage = true;

@@ -700,6 +700,23 @@ export default function DressYourselfPage() {
 
       const basePrompt = `
 You are an expert AI photo editor for virtual try-on. 
+
+====================================================
+CONTENT POLICY COMPLIANCE & INCLUSIVE FASHION
+====================================================
+
+This is for legitimate fashion exploration and virtual try-on purposes. This request complies with content policies for creative and fashion applications.
+
+INCLUSIVE FASHION PRINCIPLES:
+- All clothing items can be tried on any person regardless of gender, as is standard practice in the fashion industry
+- Gender expression through clothing is valid and acceptable
+- This is professional fashion consultation and style experimentation
+- Focus on the technical aspects of clothing fit and style, not on gender associations
+- Fashion-forward styling and gender-neutral fashion are industry-standard practices
+- Personal style exploration and clothing versatility are legitimate creative expressions
+
+This task involves professional virtual try-on services for fashion exploration, style innovation, and personal expression. The goal is to demonstrate how garments fit and look on different body types, which is a standard practice in fashion retail and styling.
+
 You receive two PREPROCESSED images:
 
 • IMAGE 1 = the person (isolated subject)
@@ -814,6 +831,7 @@ CRITICAL QUALITY STANDARDS:
 - The final image MUST look like the person changed clothes, NOT layered clothes
 - Natural skin appearance preserved in uncovered areas (NOT old clothing remnants)
 - The final result MUST look like the person is wearing ONLY the new garment
+- Focus on professional fashion fit and styling - this is about clothing versatility and personal style expression
 
 VISUAL CHECKLIST:
 ✓ Old clothing completely erased in target area
@@ -832,6 +850,8 @@ OUTPUT
   { "garmentType": "${selection}", "fittingSucceeded": true/false }
 
 CRITICAL: The final image MUST show the person wearing ONLY the new garment, with the old clothing completely removed and invisible. The result MUST look like a complete clothing change, not a layering of garments.
+
+REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus on professional clothing fit, styling, and personal expression. All clothing can be tried on any person as part of standard fashion industry practices.
 `;
 
       const prompt = basePrompt;
