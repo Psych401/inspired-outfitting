@@ -93,6 +93,28 @@ export const imageToCanvas = (img: HTMLImageElement): HTMLCanvasElement => {
   return canvas;
 };
 
+/** Max dimension (px) to send to Gemini for more consistent results (API scales to 3072 but smaller is more reliable) */
+const GEMINI_RECOMMENDED_MAX_DIMENSION = 1024;
+
+/**
+ * Resize an image to fit within maxDimension on the longest side (aspect ratio preserved).
+ * Returns a new canvas. Use before sending images to Gemini for more consistent behavior.
+ */
+export const resizeImageToMaxDimension = (img: HTMLImageElement, maxDimension: number = GEMINI_RECOMMENDED_MAX_DIMENSION): HTMLCanvasElement => {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  const scale = Math.min(1, maxDimension / Math.max(w, h, 1));
+  const cw = Math.round(w * scale);
+  const ch = Math.round(h * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.drawImage(img, 0, 0, w, h, 0, 0, cw, ch);
+  return canvas;
+};
+
 /**
  * Convert canvas to data URL
  */

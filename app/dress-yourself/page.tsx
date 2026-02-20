@@ -11,7 +11,7 @@ import { preprocessImages, PreprocessingDebugInfo } from '@/lib/preprocessingPip
 import { GarmentType } from '@/lib/garmentSegmentation';
 import { DebugPanel } from '@/components/DebugPanel';
 import { compositeImageWithBackground, BackgroundType, getBackgroundPreviewUrl } from '@/lib/backgroundCompositing';
-import { loadImage, imageToCanvas, canvasToDataUrl } from '@/lib/imageProcessing';
+import { loadImage, imageToCanvas, canvasToDataUrl, resizeImageToMaxDimension } from '@/lib/imageProcessing';
 import Link from 'next/link';
 
 /**
@@ -30,9 +30,12 @@ const convertFileToOpaqueJpegBase64 = async (file: File): Promise<{ base64: stri
           return;
         }
 
-        // Load the image
+        // Load the image and resize to a safe max dimension for consistent Gemini behavior
         const img = await loadImage(result);
-        const canvas = imageToCanvas(img);
+        const resized = resizeImageToMaxDimension(img, 1024);
+        const canvas = document.createElement('canvas');
+        canvas.width = resized.width;
+        canvas.height = resized.height;
         const ctx = canvas.getContext('2d');
         
         if (!ctx) {
@@ -40,12 +43,10 @@ const convertFileToOpaqueJpegBase64 = async (file: File): Promise<{ base64: stri
           return;
         }
 
-        // Create white background
+        // Create white background, then draw resized image (transparent areas show white)
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw the image on top (transparent areas will show white background)
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(resized, 0, 0);
 
         // Convert canvas directly to JPEG base64 (no blob URLs, no intermediate Files)
         const jpegDataUrl = canvasToDataUrl(canvas, 'image/jpeg', 0.95);
@@ -115,55 +116,36 @@ const fileToGenerativePart = async (file: File) => {
           reject(new Error(`Failed to convert PNG to JPEG: ${error.message}`));
         }
       } else {
-        // For non-PNG files, use standard conversion
+        // For non-PNG files: load, resize for consistency, then convert to JPEG base64
         const reader = new FileReader();
-        reader.onloadend = () => {
+        reader.onloadend = async () => {
           try {
             const result = reader.result as string;
             if (!result) {
               reject(new Error('FileReader returned no result'));
               return;
             }
-
-            // Extract base64 data (remove data URL prefix)
-            const base64Data = result.includes(',') ? result.split(',')[1] : result;
-            
+            const img = await loadImage(result);
+            const resized = resizeImageToMaxDimension(img, 1024);
+            const jpegDataUrl = canvasToDataUrl(resized, 'image/jpeg', 0.95);
+            const base64Data = jpegDataUrl.includes(',') ? jpegDataUrl.split(',')[1] : jpegDataUrl;
             if (!base64Data || base64Data.length === 0) {
-              reject(new Error('Base64 data is empty'));
+              reject(new Error('Base64 data is empty after resize'));
               return;
             }
-
-            // Use the file's actual mimeType
-            let mimeType = file.type || 'image/jpeg';
-            if (result.startsWith('data:')) {
-              const mimeMatch = result.match(/data:([^;]+)/);
-              if (mimeMatch) {
-                mimeType = mimeMatch[1];
-              }
-            }
-
-            console.log('📦 File converted (non-PNG):', {
+            console.log('📦 File converted (non-PNG, resized):', {
               fileName: file.name,
               fileSize: file.size,
-              mimeType,
               base64Length: base64Data.length,
             });
-
             resolve({
-              inlineData: { 
-                data: base64Data, 
-                mimeType: mimeType || 'image/jpeg' 
-              },
+              inlineData: { data: base64Data, mimeType: 'image/jpeg' },
             });
           } catch (error: any) {
             reject(new Error(`Failed to process file: ${error.message}`));
           }
         };
-        
-        reader.onerror = () => {
-          reject(new Error('FileReader error while reading file'));
-        };
-        
+        reader.onerror = () => reject(new Error('FileReader error while reading file'));
         reader.readAsDataURL(file);
       }
     });
@@ -698,7 +680,7 @@ export default function DressYourselfPage() {
 
       const selection = getSelectionString();
 
-      const basePrompt = `
+      const basePromptLong = `
 You are an expert AI photo editor for virtual try-on. 
 
 ====================================================
@@ -733,21 +715,21 @@ IMPORTANT: Both images have been preprocessed:
 CRITICAL TASK REQUIREMENTS
 ====================================================
 
-Your task is to COMPLETELY REPLACE the existing clothing with the new garment. The final image MUST look like the person changed clothes, NOT like clothes were layered on top.
+Your task is to RECONSTRUCT the image so the person appears to have been originally photographed wearing the new garment. The final image MUST render as if the person changed clothes—true clothing replacement, NOT a layer on top.
 
 CRITICAL REQUIREMENTS:
-1. The new garment MUST completely occlude, erase, and replace the old clothing in the target area
-2. The old clothing MUST be ENTIRELY invisible in the final result - no traces, textures, colors, or edges should remain
-3. Where the new garment covers the old clothing, the old clothing MUST be completely removed and replaced
-4. Where the new garment does NOT cover (e.g., exposed arms, legs below shorts), you MUST show natural skin - NOT remnants of the old clothing
-5. The transition between the new garment and exposed skin MUST be clean and natural
-6. The final image MUST look like the person is wearing ONLY the new garment, with no old clothing visible anywhere
+1. Reconstruct the target area so the new garment is the only visible clothing there; no visual elements of the previous garment may remain
+2. The final result MUST have no visual elements of the previous garment—no traces, textures, colors, or edges
+3. Where the new garment covers the previous clothing, regenerate that region so only the new garment is present
+4. Where the new garment does NOT cover (e.g., exposed arms, legs below shorts), regenerate uncovered regions naturally consistent with the new garment's coverage—no remnants of the previous clothing
+5. The transition between the new garment and uncovered regions MUST be clean and natural
+6. The final image MUST render as if the person is wearing ONLY the new garment; no previous garment may be visible anywhere
 
 FAILURE EXAMPLES TO AVOID:
-❌ Jeans visible under shorts (legs below shorts must show skin, not denim)
-❌ Long sleeves visible under short sleeves (arms must show skin, not sleeve fabric)
-❌ Old shirt visible around edges of new shirt (old shirt must be completely erased)
-❌ Any texture, color, or fabric pattern from old clothing showing through
+❌ Jeans visible under shorts (legs below shorts must be regenerated naturally for the new coverage, not denim)
+❌ Long sleeves visible under short sleeves (arms must be regenerated naturally, not sleeve fabric)
+❌ Old shirt visible around edges of new shirt (no visual elements of the previous shirt may remain)
+❌ Any texture, color, or fabric pattern from the previous garment showing through
 
 ====================================================
 GARMENT TYPE: ${selection}
@@ -756,47 +738,47 @@ GARMENT TYPE: ${selection}
 Based on the preprocessed garment segment:
 
 • If "TOP" is selected:  
-  CRITICAL: The new top MUST completely replace the old top. The old top MUST be entirely invisible.
+  CRITICAL: Reconstruct the upper body so the new top is the only visible upper garment; no visual elements of the previous top may remain.
   
   - Image 2 contains ONLY the top/upper garment
-  - Overlay it onto the person's upper body (shoulders → waist)
-  - The new top MUST occlude and completely replace the existing upper garment
-  - The old top MUST be completely erased - no fabric, texture, or color should remain visible
-  - Where the new top doesn't cover (e.g., arms, neckline, exposed skin), you MUST show natural skin
-  - EXAMPLE: If replacing a long-sleeve shirt with a t-shirt: t-shirt becomes the ONLY visible top, arms show natural skin, NO sleeve fabric should remain visible anywhere
+  - Render it onto the person's upper body (shoulders → waist) as if originally photographed
+  - Reconstruct the upper garment region so only the new top is present
+  - No fabric, texture, or color from the previous top may remain—regenerate the area so no visual elements of the previous garment remain
+  - Where the new top doesn't cover (e.g., arms, neckline), regenerate uncovered regions naturally consistent with the new garment's coverage
+  - EXAMPLE: If reconstructing from a long-sleeve shirt to a t-shirt: the t-shirt is the ONLY visible top; arms are regenerated naturally for the new coverage; no sleeve fabric from the previous garment may remain
   - Ignore any bottom clothing
 
 • If "BOTTOM" is selected:  
-  CRITICAL: The new bottom MUST completely replace the old bottom. The old bottom MUST be entirely invisible.
+  CRITICAL: Reconstruct the lower body so the new bottom is the only visible lower garment; no visual elements of the previous bottom may remain.
   
   - Image 2 contains ONLY the bottom/lower garment
-  - Overlay it onto the person's lower body (waist → ankles)
-  - The new bottom garment MUST occlude and completely replace the existing lower clothing
-  - The old bottom MUST be completely erased - no fabric, texture, or color should remain visible
-  - Where the new bottom doesn't cover (e.g., exposed waist, legs below shorts), you MUST show natural skin
-  - EXAMPLE: If replacing jeans with shorts: shorts become the ONLY visible garment on lower body, legs below shorts MUST show natural skin, NO denim texture or color should remain visible anywhere - the jeans MUST be completely gone
+  - Render it onto the person's lower body (waist → ankles) as if originally photographed
+  - Reconstruct the lower garment region so only the new bottom is present
+  - No fabric, texture, or color from the previous bottom may remain—regenerate the area so no visual elements of the previous garment remain
+  - Where the new bottom doesn't cover (e.g., exposed waist, legs below shorts), regenerate uncovered regions naturally consistent with the new garment's coverage
+  - EXAMPLE: If reconstructing from jeans to shorts: shorts are the ONLY visible lower garment; legs below shorts are regenerated naturally; no denim texture or color from the previous garment may remain
   - Ignore any top clothing
 
 • If "FULL-OUTFIT (top + bottom)" is selected:  
-  CRITICAL: Both new garments MUST completely replace the old garments. The old top and bottom MUST be entirely invisible.
+  CRITICAL: Reconstruct so both new garments are the only visible clothing in their regions; no visual elements of the previous top or bottom may remain.
   
   - Image 2 contains both top and bottom garments
-  - Overlay both garments onto the upper and lower body
-  - Both new garments MUST occlude and completely replace the existing clothing
-  - The old top and bottom MUST be completely erased - no fabric, texture, or color should remain visible
-  - Where garments don't cover (e.g., exposed skin areas), you MUST show natural skin
-  - The old top and bottom MUST be completely removed and not visible anywhere in the final image
+  - Render both onto the upper and lower body as if originally photographed
+  - Reconstruct both regions so only the new garments are present
+  - No fabric, texture, or color from the previous top or bottom may remain
+  - Where garments don't cover (e.g., exposed regions), regenerate uncovered regions naturally consistent with the new garments' coverage
+  - The final image must contain no visual elements of the previous top or bottom anywhere
 
 • If "FULL BODY" is selected:  
-  CRITICAL: The new full-body garment MUST completely replace all old clothing. The old clothing MUST be entirely invisible.
+  CRITICAL: Reconstruct so the new full-body garment is the only visible clothing; no visual elements of the previous clothing may remain.
   
   - Image 2 contains a full-body garment (dress, jumpsuit, etc.)
-  - Overlay it onto the entire body
-  - The new full-body garment MUST occlude and completely replace all existing clothing
-  - The old clothing MUST be completely erased - no fabric, texture, or color should remain visible
-  - Where the garment doesn't cover (e.g., face, hands, exposed skin), you MUST show natural skin
-  - EXAMPLE: If replacing a t-shirt and jeans with a dress: dress becomes the ONLY visible clothing, arms show natural skin, legs that the dress does not cover show natural skin, NO jean or t-shirt fabric should remain visible anywhere - the old clothing MUST be completely gone
-  - The old clothing MUST be completely removed and not visible anywhere in the final image
+  - Render it onto the entire body as if originally photographed
+  - Reconstruct so only the new full-body garment is present
+  - No fabric, texture, or color from the previous clothing may remain
+  - Where the garment doesn't cover (e.g., face, hands), regenerate uncovered regions naturally consistent with the new garment's coverage
+  - EXAMPLE: If reconstructing from a t-shirt and jeans to a dress: the dress is the ONLY visible clothing; arms and legs the dress does not cover are regenerated naturally; no jean or t-shirt elements may remain
+  - The final image must contain no visual elements of the previous clothing anywhere
 
 ====================================================
 FITTING INSTRUCTIONS
@@ -804,16 +786,16 @@ FITTING INSTRUCTIONS
 
 1. Analyze the person's body shape and pose in Image 1
 2. Identify the exact placement area for the garment segment
-3. CRITICAL: Overlay the preprocessed garment segment and COMPLETELY ERASE the old clothing in that area
-4. The new garment MUST become the only visible layer - the old clothing underneath MUST be completely invisible
+3. CRITICAL: Reconstruct the target area with the preprocessed garment segment so no visual elements of the previous garment remain
+4. The new garment MUST be the only visible clothing in that region—regenerate the area so the previous garment is not present
 5. Blend seamlessly with:
    - Correct proportions matching the person's body
    - Natural draping and folds
    - Proper lighting and shadows matching Image 1
-   - Clean transitions where the new garment replaces the old
+   - Clean transitions where the new garment is rendered
 6. Handle occlusions (arms, hair, accessories) realistically
 7. Ensure the garment looks naturally worn, not pasted
-8. CRITICAL: In areas not covered by the new garment, show natural skin - NOT remnants of old clothing
+8. CRITICAL: In areas not covered by the new garment, regenerate uncovered regions naturally consistent with the new garment's coverage—no remnants of the previous clothing
 
 ====================================================
 QUALITY REQUIREMENTS
@@ -821,24 +803,24 @@ QUALITY REQUIREMENTS
 
 CRITICAL QUALITY STANDARDS:
 - Photorealistic result that looks natural
-- NO traces of original clothing visible through or around the new garment
+- NO traces of the previous garment visible through or around the new garment
 - NO visible seams, artifacts, or inconsistencies
 - Proper lighting and shadow matching
 - Realistic fabric texture and draping
 - Natural fit that follows body contours
-- The transition between garment and skin MUST be clean and natural
-- The old clothing MUST be completely invisible - no texture, color, or fabric pattern should remain
-- The final image MUST look like the person changed clothes, NOT layered clothes
-- Natural skin appearance preserved in uncovered areas (NOT old clothing remnants)
-- The final result MUST look like the person is wearing ONLY the new garment
+- The transition between garment and uncovered regions MUST be clean and natural
+- No visual elements of the previous garment may remain—no texture, color, or fabric pattern
+- The final image MUST render as if the person changed clothes, NOT layered clothes
+- Uncovered regions regenerated naturally consistent with the new garment's coverage (NOT previous garment remnants)
+- The final result MUST render as if the person was originally photographed wearing ONLY the new garment
 - Focus on professional fashion fit and styling - this is about clothing versatility and personal style expression
 
 VISUAL CHECKLIST:
-✓ Old clothing completely erased in target area
-✓ No old fabric visible under or around new garment
-✓ Exposed skin areas show natural skin (not old clothing)
-✓ Clean transitions between garment and skin
-✓ Final image looks like a complete clothing change
+✓ Target area reconstructed so no visual elements of the previous garment remain
+✓ No previous fabric visible under or around the new garment
+✓ Uncovered regions regenerated naturally consistent with the new garment's coverage
+✓ Clean transitions between garment and uncovered regions
+✓ Final image renders as a complete clothing change
 
 ====================================================
 OUTPUT
@@ -849,12 +831,12 @@ OUTPUT
 • (Optional) JSON summary: 
   { "garmentType": "${selection}", "fittingSucceeded": true/false }
 
-CRITICAL: The final image MUST show the person wearing ONLY the new garment, with the old clothing completely removed and invisible. The result MUST look like a complete clothing change, not a layering of garments.
+CRITICAL: The final image MUST render as if the person was originally photographed wearing ONLY the new garment; no visual elements of the previous clothing may remain. The result MUST be a true clothing replacement—reconstructed, not layered.
 
 REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus on professional clothing fit, styling, and personal expression. All clothing can be tried on any person as part of standard fashion industry practices.
 `;
 
-      const prompt = basePrompt;
+      const modelName = 'gemini-2.5-flash-image';
 
       // Log request details for debugging
       console.log('🔄 Sending request to Gemini API...');
@@ -868,75 +850,18 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         mimeType: outfitPart.inlineData?.mimeType,
         dataLength: outfitPart.inlineData?.data?.length || 0,
       });
-      console.log('📤 Prompt length:', prompt.length);
 
-      // Prepare request payload
-      // Note: Model name may vary - try different variants if one fails
-      const modelName = 'gemini-2.5-flash-image'; // or 'gemini-2.0-flash-exp', 'gemini-pro-vision', etc.
-      
-      // CRITICAL: Build request payload with ONLY preprocessed images
-      // @google/genai expects contents to be an array of content objects with role + parts (not a single object)
-      const requestPayload = {
-        model: modelName,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              personPart,  // MUST be preprocessed person image (background removed)
-              outfitPart,  // MUST be preprocessed garment image (background removed)
-              { text: prompt },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-        },
-      };
-
-      const userParts = requestPayload.contents[0].parts;
-      // Final verification: Ensure we're only sending 2 images (both preprocessed) + 1 text prompt
-      // SECURITY CHECK: Verify no original images are being sent
-      if (userParts.length !== 3) {
-        throw new Error('SECURITY ERROR: Request payload must contain exactly 3 parts (2 preprocessed images + 1 prompt)');
-      }
-
-      console.log('🔒 SECURITY CHECK: Request payload verified:', {
-        totalParts: userParts.length,
-        imageParts: userParts.filter((p: any) => 'inlineData' in p).length,
-        textParts: userParts.filter((p: any) => 'text' in p).length,
-        personPartHasData: !!personPart.inlineData?.data,
-        outfitPartHasData: !!outfitPart.inlineData?.data,
-        verifiedPreprocessed: preprocessingResult.steps.personBackgroundRemoved && preprocessingResult.steps.garmentBackgroundRemoved,
-        personImageSource: 'preprocessed (background-removed)',
-        garmentImageSource: 'preprocessed (background-removed)',
-      });
-      
       // CRITICAL: Double-check that preprocessing succeeded
       if (!preprocessingResult.steps.personBackgroundRemoved || !preprocessingResult.steps.garmentBackgroundRemoved) {
         throw new Error('SECURITY ERROR: Cannot send request - preprocessing did not complete successfully. Original images would be sent.');
       }
 
-      console.log('🤖 Using model:', modelName);
-
-      console.log('📋 Request payload structure:', {
-        model: requestPayload.model,
-        partsCount: userParts.length,
-        hasPersonPart: !!personPart.inlineData,
-        hasOutfitPart: !!outfitPart.inlineData,
-        hasPrompt: !!prompt,
-        responseModalities: requestPayload.config.responseModalities,
-      });
-
-      // CRITICAL: Log the actual base64 data to verify we're not sending original images
-      // Check first few characters of base64 to see if images match
       if (isDebugMode) {
         console.log('🔍 VERIFICATION: Checking image data being sent...');
         console.log('   Person image base64 preview:', personPart.inlineData?.data?.substring(0, 50) + '...');
         console.log('   Garment image base64 preview:', outfitPart.inlineData?.data?.substring(0, 50) + '...');
         console.log('   Person image mimeType:', personPart.inlineData?.mimeType);
         console.log('   Garment image mimeType:', outfitPart.inlineData?.mimeType);
-        
-        // Verify both images are JPEG (conversion must have succeeded)
         if (personPart.inlineData?.mimeType !== 'image/jpeg') {
           console.error('❌ ERROR: Person image mimeType is not JPEG:', personPart.inlineData?.mimeType);
         }
@@ -945,85 +870,119 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         }
       }
 
-      let response;
-      try {
-        response = await ai.models.generateContent(requestPayload);
-      } catch (apiError: any) {
-        console.error('❌ Gemini API call failed:', {
-          error: apiError,
-          message: apiError?.message,
-          status: apiError?.status,
-          statusText: apiError?.statusText,
-          response: apiError?.response,
-          stack: apiError?.stack,
-        });
-
-        // Check for specific error types
-        if (apiError?.message?.includes('API key')) {
-          throw new Error('Invalid API key. Please check your NEXT_PUBLIC_GEMINI_API_KEY in .env.local');
-        }
-        if (apiError?.message?.includes('quota') || apiError?.message?.includes('limit')) {
-          throw new Error('API quota exceeded. Please check your Gemini API quota or try again later.');
-        }
-        if (apiError?.status === 401) {
-          throw new Error('Authentication failed. Please verify your API key is correct.');
-        }
-        if (apiError?.status === 429) {
-          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-        }
-        if (apiError?.status === 400) {
-          throw new Error(`Invalid request: ${apiError?.message || 'Please check your input images and try again.'}`);
-        }
-
-        throw new Error(`API call failed: ${apiError?.message || 'Unknown error. Please check the console for details.'}`);
-      }
-
-      // Check if response has candidates (SDK may use non-enumerable properties, so don't rely on Object.keys)
-      if (!response || !response.candidates || response.candidates.length === 0) {
-        console.error('❌ No candidates in response from Gemini API');
-        throw new Error(
-          'No candidates returned from Gemini. This could indicate:\n' +
-          '1. API key is invalid or expired\n' +
-          '2. API quota is exhausted\n' +
-          '3. Network connectivity issue\n' +
-          'Please check your API key and quota, then try again.'
-        );
-      }
-
-      // Check for error in response
-      if ((response as any).error) {
-        const errorInfo = (response as any).error;
-        console.error('❌ Error in API response:', errorInfo);
-        throw new Error(
-          `Gemini API returned an error: ${errorInfo.message || errorInfo.code || 'Unknown error'}. ` +
-          `Please check your API key, quota, and try again.`
-        );
-      }
-
-      // Log full response for debugging
-      console.log('📥 Gemini API Response:', {
-        hasCandidates: !!response.candidates,
-        candidatesLength: response.candidates?.length || 0,
-        firstCandidate: response.candidates?.[0] ? {
-          hasContent: !!response.candidates[0].content,
-          hasParts: !!response.candidates[0].content?.parts,
-          partsLength: response.candidates[0].content?.parts?.length || 0,
-          parts: response.candidates[0].content?.parts?.map((p: any) => ({
-            hasInlineData: !!p.inlineData,
-            hasText: !!p.text,
-            mimeType: p.inlineData?.mimeType,
-            dataLength: p.inlineData?.data?.length || 0,
-          })),
-        } : null,
-        fullResponse: JSON.stringify(response, null, 2).substring(0, 1000), // First 1000 chars
-      });
-
-      // Multiple extraction methods for robustness
+      const maxAttempts = 2;
+      let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
       let foundImage = false;
       let imageUrl: string | null = null;
 
-      // Method 0: Use SDK getter (GenerateContentResponse.data returns concatenated inline data; SDK may not expose it on candidates when serialized)
-      const responseData = (response as { data?: string }).data;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const prompt = basePromptLong;
+        if (attempt > 1) {
+          console.log('🔄 Retrying Gemini image generation (attempt ' + attempt + '/' + maxAttempts + ')...');
+        }
+
+        const requestPayload = {
+          model: modelName,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                personPart,
+                outfitPart,
+                { text: prompt },
+              ],
+            },
+          ],
+          config: {
+            responseModalities: [Modality.IMAGE, Modality.TEXT],
+          },
+        };
+
+        const userParts = requestPayload.contents[0].parts;
+        if (userParts.length !== 3) {
+          throw new Error('SECURITY ERROR: Request payload must contain exactly 3 parts (2 preprocessed images + 1 prompt)');
+        }
+
+        console.log('🤖 Using model:', modelName);
+        console.log('📋 Request payload structure (attempt ' + attempt + '):', {
+          model: requestPayload.model,
+          partsCount: userParts.length,
+          hasPersonPart: !!personPart.inlineData,
+          hasOutfitPart: !!outfitPart.inlineData,
+          hasPrompt: !!prompt,
+          responseModalities: requestPayload.config.responseModalities,
+        });
+
+        try {
+          response = await ai.models.generateContent(requestPayload);
+        } catch (apiError: any) {
+          console.error('❌ Gemini API call failed:', {
+            error: apiError,
+            message: apiError?.message,
+            status: apiError?.status,
+            statusText: apiError?.statusText,
+            response: apiError?.response,
+            stack: apiError?.stack,
+          });
+          if (apiError?.message?.includes('API key')) {
+            throw new Error('Invalid API key. Please check your NEXT_PUBLIC_GEMINI_API_KEY in .env.local');
+          }
+          if (apiError?.message?.includes('quota') || apiError?.message?.includes('limit')) {
+            throw new Error('API quota exceeded. Please check your Gemini API quota or try again later.');
+          }
+          if (apiError?.status === 401) {
+            throw new Error('Authentication failed. Please verify your API key is correct.');
+          }
+          if (apiError?.status === 429) {
+            throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+          }
+          if (apiError?.status === 400) {
+            throw new Error(`Invalid request: ${apiError?.message || 'Please check your input images and try again.'}`);
+          }
+          throw new Error(`API call failed: ${apiError?.message || 'Unknown error. Please check the console for details.'}`);
+        }
+
+        if (!response || !response.candidates || response.candidates.length === 0) {
+          console.error('❌ No candidates in response from Gemini API');
+          throw new Error(
+            'No candidates returned from Gemini. This could indicate:\n' +
+            '1. API key is invalid or expired\n' +
+            '2. API quota is exhausted\n' +
+            '3. Network connectivity issue\n' +
+            'Please check your API key and quota, then try again.'
+          );
+        }
+
+        if ((response as any).error) {
+          const errorInfo = (response as any).error;
+          console.error('❌ Error in API response:', errorInfo);
+          throw new Error(
+            `Gemini API returned an error: ${errorInfo.message || errorInfo.code || 'Unknown error'}. ` +
+            'Please check your API key, quota, and try again.'
+          );
+        }
+
+        console.log('📥 Gemini API Response (attempt ' + attempt + '):', {
+          hasCandidates: !!response.candidates,
+          candidatesLength: response.candidates?.length || 0,
+          firstCandidate: response.candidates?.[0] ? {
+            hasContent: !!response.candidates[0].content,
+            hasParts: !!response.candidates[0].content?.parts,
+            partsLength: response.candidates[0].content?.parts?.length || 0,
+            parts: response.candidates[0].content?.parts?.map((p: any) => ({
+              hasInlineData: !!p.inlineData,
+              hasText: !!p.text,
+              mimeType: p.inlineData?.mimeType,
+              dataLength: p.inlineData?.data?.length || 0,
+            })),
+          } : null,
+        });
+
+        foundImage = false;
+        imageUrl = null;
+
+        // Method 0: Use SDK getter (GenerateContentResponse.data returns concatenated inline data)
+        const responseData = (response as { data?: string }).data;
       if (responseData && responseData.length > 0) {
         imageUrl = `data:image/png;base64,${responseData}`;
         console.log('✅ Found image via response.data (SDK getter)');
@@ -1089,6 +1048,21 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
           console.log('✅ Found image in response.inlineData');
           foundImage = true;
         }
+      }
+
+        if (foundImage && imageUrl) break;
+
+        const firstCandidateAttempt = response.candidates?.[0] as any;
+        const finishReasonAttempt = firstCandidateAttempt?.finishReason;
+        if (attempt < maxAttempts && finishReasonAttempt === 'IMAGE_OTHER') {
+          console.log('🔄 No image (IMAGE_OTHER) on attempt ' + attempt + ', retrying once...');
+          continue;
+        }
+        break;
+      }
+
+      if (response === undefined) {
+        throw new Error('Unexpected: no response from Gemini after attempts.');
       }
 
       if (!foundImage || !imageUrl) {
