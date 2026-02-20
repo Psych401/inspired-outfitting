@@ -875,31 +875,35 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
       const modelName = 'gemini-2.5-flash-image'; // or 'gemini-2.0-flash-exp', 'gemini-pro-vision', etc.
       
       // CRITICAL: Build request payload with ONLY preprocessed images
-      // These MUST be the background-removed versions - NEVER original images
+      // @google/genai expects contents to be an array of content objects with role + parts (not a single object)
       const requestPayload = {
         model: modelName,
-        contents: {
-          parts: [
-            personPart,  // MUST be preprocessed person image (background removed)
-            outfitPart,  // MUST be preprocessed garment image (background removed)
-            { text: prompt },
-          ],
-        },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              personPart,  // MUST be preprocessed person image (background removed)
+              outfitPart,  // MUST be preprocessed garment image (background removed)
+              { text: prompt },
+            ],
+          },
+        ],
         config: {
-          responseModalities: [Modality.IMAGE],
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
         },
       };
-      
+
+      const userParts = requestPayload.contents[0].parts;
       // Final verification: Ensure we're only sending 2 images (both preprocessed) + 1 text prompt
       // SECURITY CHECK: Verify no original images are being sent
-      if (requestPayload.contents.parts.length !== 3) {
+      if (userParts.length !== 3) {
         throw new Error('SECURITY ERROR: Request payload must contain exactly 3 parts (2 preprocessed images + 1 prompt)');
       }
-      
+
       console.log('🔒 SECURITY CHECK: Request payload verified:', {
-        totalParts: requestPayload.contents.parts.length,
-        imageParts: requestPayload.contents.parts.filter((p: any) => 'inlineData' in p).length,
-        textParts: requestPayload.contents.parts.filter((p: any) => 'text' in p).length,
+        totalParts: userParts.length,
+        imageParts: userParts.filter((p: any) => 'inlineData' in p).length,
+        textParts: userParts.filter((p: any) => 'text' in p).length,
         personPartHasData: !!personPart.inlineData?.data,
         outfitPartHasData: !!outfitPart.inlineData?.data,
         verifiedPreprocessed: preprocessingResult.steps.personBackgroundRemoved && preprocessingResult.steps.garmentBackgroundRemoved,
@@ -916,7 +920,7 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
 
       console.log('📋 Request payload structure:', {
         model: requestPayload.model,
-        partsCount: requestPayload.contents.parts.length,
+        partsCount: userParts.length,
         hasPersonPart: !!personPart.inlineData,
         hasOutfitPart: !!outfitPart.inlineData,
         hasPrompt: !!prompt,
@@ -974,11 +978,11 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         throw new Error(`API call failed: ${apiError?.message || 'Unknown error. Please check the console for details.'}`);
       }
 
-      // Check if response is empty or invalid
-      if (!response || typeof response !== 'object' || Object.keys(response).length === 0) {
-        console.error('❌ Empty or invalid response received from Gemini API');
+      // Check if response has candidates (SDK may use non-enumerable properties, so don't rely on Object.keys)
+      if (!response || !response.candidates || response.candidates.length === 0) {
+        console.error('❌ No candidates in response from Gemini API');
         throw new Error(
-          'Received empty response from Gemini API. This could indicate:\n' +
+          'No candidates returned from Gemini. This could indicate:\n' +
           '1. API key is invalid or expired\n' +
           '2. API quota is exhausted\n' +
           '3. Network connectivity issue\n' +
@@ -1018,8 +1022,16 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
       let foundImage = false;
       let imageUrl: string | null = null;
 
+      // Method 0: Use SDK getter (GenerateContentResponse.data returns concatenated inline data; SDK may not expose it on candidates when serialized)
+      const responseData = (response as { data?: string }).data;
+      if (responseData && responseData.length > 0) {
+        imageUrl = `data:image/png;base64,${responseData}`;
+        console.log('✅ Found image via response.data (SDK getter)');
+        foundImage = true;
+      }
+
       // Method 1: Check candidates[0].content.parts for inlineData
-      if (response.candidates && response.candidates[0]) {
+      if (!foundImage && response.candidates && response.candidates[0]) {
         const candidate = response.candidates[0];
         
         // Check for content.parts
@@ -1027,8 +1039,8 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
           console.log('🔍 Checking content.parts for image...');
           for (const part of candidate.content.parts) {
             if (part.inlineData && part.inlineData.data) {
-              const base64ImageBytes: string = part.inlineData.data;
-              imageUrl = `data:image/png;base64,${base64ImageBytes}`;
+              const mime = part.inlineData.mimeType || 'image/png';
+              imageUrl = `data:${mime};base64,${part.inlineData.data}`;
               console.log('✅ Found image in content.parts.inlineData');
               foundImage = true;
               break;
@@ -1041,7 +1053,8 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
           console.log('🔍 Checking candidate.inlineData for image...');
           const inlineData = (candidate as any).inlineData;
           if (inlineData.data) {
-            imageUrl = `data:image/png;base64,${inlineData.data}`;
+            const mime = inlineData.mimeType || 'image/png';
+            imageUrl = `data:${mime};base64,${inlineData.data}`;
             console.log('✅ Found image in candidate.inlineData');
             foundImage = true;
           }
@@ -1071,58 +1084,59 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         console.log('🔍 Checking response.inlineData for image...');
         const inlineData = (response as any).inlineData;
         if (inlineData.data) {
-          imageUrl = `data:image/png;base64,${inlineData.data}`;
+          const mime = inlineData.mimeType || 'image/png';
+          imageUrl = `data:${mime};base64,${inlineData.data}`;
           console.log('✅ Found image in response.inlineData');
           foundImage = true;
         }
       }
 
       if (!foundImage || !imageUrl) {
-        // Log detailed error information
-        const responseStr = JSON.stringify(response, null, 2);
-        console.error('❌ No image found in response. Full response structure:', {
-          responseType: typeof response,
-          responseKeys: Object.keys(response || {}),
-          candidates: response.candidates,
+        const firstCandidate = response.candidates?.[0] as any;
+        const finishReason = firstCandidate?.finishReason;
+        // Log actual shape (SDK response may not JSON.stringify; avoid "Full response structure: {}")
+        console.error('❌ No image found in response.', {
           candidatesLength: response.candidates?.length,
+          firstCandidateFinishReason: finishReason,
+          firstCandidateHasContent: !!firstCandidate?.content,
+          partsLength: firstCandidate?.content?.parts?.length ?? 0,
+          responseDataLength: (response as { data?: string }).data?.length ?? 0,
           error: (response as any).error,
           promptFeedback: (response as any).promptFeedback,
-          usageMetadata: (response as any).usageMetadata,
-          fullResponse: responseStr.substring(0, 2000), // First 2000 chars
         });
 
-        // Check for specific error indicators
-        const errorMessage = (response as any).error?.message || 
-                            (response as any).promptFeedback?.blockReason ||
-                            (response.candidates?.[0] as any)?.finishReason;
-
-        if (errorMessage) {
-          throw new Error(
-            `No image was generated. API returned: ${errorMessage}. ` +
-            `Please check your API key, quota, and try again.`
-          );
-        }
-
-        if ((response.candidates?.[0] as any)?.finishReason === 'SAFETY') {
+        if (finishReason === 'SAFETY') {
           throw new Error(
             'Image generation was blocked for safety reasons. Please try with different images or adjust your prompt.'
           );
         }
 
-        if ((response.candidates?.[0] as any)?.finishReason === 'RECITATION') {
+        if (finishReason === 'RECITATION') {
           throw new Error(
             'Image generation was blocked due to content policy. Please try with different images.'
           );
         }
 
+        if (finishReason === 'IMAGE_OTHER') {
+          throw new Error(
+            'The model did not return an image (IMAGE_OTHER). This usually means the request was blocked by safety filters or the model returned text instead of an image. Try different photos, a simpler outfit, or ensure both images are clear and well-lit.'
+          );
+        }
+
+        const errorMessage = (response as any).error?.message ||
+                            (response as any).promptFeedback?.blockReason ||
+                            finishReason;
+        if (errorMessage) {
+          throw new Error(
+            `No image was generated. API returned: ${errorMessage}. ` +
+            'Please check your API key, quota, and try again.'
+          );
+        }
+
         throw new Error(
           'No image was generated. The API response did not contain an image. ' +
-          'Possible causes:\n' +
-          '1. API quota exhausted - Check your Gemini API quota\n' +
-          '2. Invalid API key - Verify NEXT_PUBLIC_GEMINI_API_KEY in .env.local\n' +
-          '3. Model unavailable - The gemini-2.5-flash-image model may not be available\n' +
-          '4. Request format issue - Check console for full response details\n\n' +
-          'Full response logged to console for debugging.'
+          'Possible causes: API quota exhausted, invalid or missing API key, or the model did not return image data. ' +
+          'Check the console for details (candidatesLength, firstCandidateFinishReason, responseDataLength).'
         );
       }
 
