@@ -52,7 +52,8 @@ export async function runTryOnJob(
       outfitBase64: buffers.outfit.toString('base64'),
       personMime: buffers.personMime,
       outfitMime: buffers.outfitMime,
-      garmentType: job.garmentType,
+      category: job.category,
+      garment_photo_type: job.garmentPhotoType,
       webhookUrl,
       webhookSecret,
     });

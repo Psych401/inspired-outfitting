@@ -1,6 +1,6 @@
 /**
  * Calls a Modal-deployed HTTP endpoint (Python FastAPI or Modal web endpoint).
- * Contract: POST JSON { jobId, personBase64, outfitBase64, garmentType, webhookUrl, webhookSecret }
+ * Contract: POST JSON { jobId, personBase64, outfitBase64, category, garment_photo_type, webhookUrl, webhookSecret }
  * Response: { mode: 'async' } | { mode: 'sync', resultBase64, mimeType? }
  */
 
@@ -36,7 +36,8 @@ export class ModalHttpGpuProvider implements GpuProvider {
       outfitBase64: payload.outfitBase64,
       personMime: payload.personMime,
       outfitMime: payload.outfitMime,
-      garmentType: payload.garmentType,
+      category: payload.category,
+      garment_photo_type: payload.garment_photo_type,
       webhookUrl: payload.webhookUrl,
       webhookSecret: payload.webhookSecret,
     });

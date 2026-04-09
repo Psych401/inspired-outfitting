@@ -2,14 +2,16 @@
  * Shared types for the virtual try-on pipeline (Modal / future RunPod).
  */
 
-export type GarmentType = 'top' | 'bottom' | 'fullBody';
+export type GarmentCategory = 'tops' | 'bottoms' | 'one-pieces';
+export type GarmentPhotoType = 'flat-lay' | 'model';
 
 export type TryOnJobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
 
 export interface TryOnJobRecord {
   id: string;
   status: TryOnJobStatus;
-  garmentType: GarmentType;
+  category: GarmentCategory;
+  garmentPhotoType: GarmentPhotoType;
   createdAt: number;
   updatedAt: number;
   userId?: string;
@@ -45,7 +47,8 @@ export interface CreateJobInput {
   outfitBuffer: Buffer;
   personMime: string;
   outfitMime: string;
-  garmentType: GarmentType;
+  category: GarmentCategory;
+  garmentPhotoType: GarmentPhotoType;
   userId?: string;
   requestId?: string;
 }
@@ -56,7 +59,8 @@ export interface GpuSubmitPayload {
   outfitBase64: string;
   personMime: string;
   outfitMime: string;
-  garmentType: GarmentType;
+  category: GarmentCategory;
+  garment_photo_type: GarmentPhotoType;
   webhookUrl: string;
   webhookSecret: string;
 }

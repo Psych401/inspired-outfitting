@@ -5,12 +5,13 @@ import { getCreditCostPerGeneration, tryDebitCredits, refundCredits } from '@/li
 import { checkRateLimit, rateLimitKey } from '@/lib/try-on/rate-limit';
 import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
-import type { GarmentType } from '@/lib/try-on/types';
+import type { GarmentCategory, GarmentPhotoType } from '@/lib/try-on/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
-const GARMENT_TYPES = new Set<GarmentType>(['top', 'bottom', 'fullBody']);
+const GARMENT_CATEGORIES = new Set<GarmentCategory>(['tops', 'bottoms', 'one-pieces']);
+const GARMENT_PHOTO_TYPES = new Set<GarmentPhotoType>(['flat-lay', 'model']);
 
 function clientIp(request: NextRequest): string {
   const xf = request.headers.get('x-forwarded-for');
@@ -31,7 +32,8 @@ export async function POST(request: NextRequest) {
     const form = await request.formData();
     const personFile = form.get('person');
     const outfitFile = form.get('outfit');
-    const garmentRaw = form.get('garmentType');
+    const categoryRaw = form.get('category');
+    const garmentPhotoTypeRaw = form.get('garment_photo_type');
     const userId = (form.get('userId') as string | null) ?? request.headers.get('x-user-id') ?? undefined;
     const requestId = (form.get('requestId') as string | null) ?? undefined;
     console.log('[try-on][api] request_received', {
@@ -52,10 +54,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const garmentType = typeof garmentRaw === 'string' ? garmentRaw.trim() : '';
-    if (!GARMENT_TYPES.has(garmentType as GarmentType)) {
+    const category = typeof categoryRaw === 'string' ? categoryRaw.trim() : '';
+    if (!GARMENT_CATEGORIES.has(category as GarmentCategory)) {
       return NextResponse.json(
-        { error: 'garmentType must be top, bottom, or fullBody', code: 'INVALID_GARMENT_TYPE' },
+        { error: 'category must be tops, bottoms, or one-pieces', code: 'INVALID_CATEGORY' },
+        { status: 400 }
+      );
+    }
+
+    const garmentPhotoType =
+      typeof garmentPhotoTypeRaw === 'string' ? garmentPhotoTypeRaw.trim() : '';
+    if (!GARMENT_PHOTO_TYPES.has(garmentPhotoType as GarmentPhotoType)) {
+      return NextResponse.json(
+        { error: 'garment_photo_type must be flat-lay or model', code: 'INVALID_GARMENT_PHOTO_TYPE' },
         { status: 400 }
       );
     }
@@ -109,7 +120,8 @@ export async function POST(request: NextRequest) {
     const store = getJobStore();
     const job = await store.create({
       status: 'queued',
-      garmentType: garmentType as GarmentType,
+      category: category as GarmentCategory,
+      garmentPhotoType: garmentPhotoType as GarmentPhotoType,
       userId,
       requestId,
       retryCount: 0,
@@ -119,7 +131,8 @@ export async function POST(request: NextRequest) {
       reqTag,
       jobId: job.id,
       requestId,
-      garmentType,
+      category,
+      garmentPhotoType,
       direct_vton_without_preprocessing: true,
       background_removal_active: false,
     });
@@ -127,7 +140,8 @@ export async function POST(request: NextRequest) {
     await logJobEvent(job.id, 'info', 'job_created', {
       userId,
       requestId,
-      garmentType,
+      category,
+      garmentPhotoType,
       requestDurationMsSoFar: Date.now() - wallStart,
       direct_vton_without_preprocessing: true,
       background_removal_active: false,

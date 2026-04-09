@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { GoogleGenAI, Modality } from '@google/genai';
 import { useAuth } from '@/hooks/useAuth';
 import Button from '@/components/Button';
 import { UploadIcon, SparklesIcon, DownloadIcon } from '@/components/IconComponents';
@@ -9,146 +8,8 @@ import { useRouter } from 'next/navigation';
 import PreviousOutfits from '@/components/PreviousOutfits';
 import type { PreprocessingDebugInfo } from '@/lib/preprocessingPipeline';
 import { DebugPanel } from '@/components/DebugPanel';
-import { compositeImageWithBackground, BackgroundType, getBackgroundPreviewUrl } from '@/lib/backgroundCompositing';
-import { loadImage, imageToCanvas, canvasToDataUrl, resizeImageToMaxDimension } from '@/lib/imageProcessing';
 import Link from 'next/link';
-
-/**
- * Convert a File to opaque JPEG base64 data
- * Fills transparent areas with white background for PNG files
- * Returns direct base64 data (no intermediate File objects or blob URLs)
- */
-const convertFileToOpaqueJpegBase64 = async (file: File): Promise<{ base64: string; mimeType: string }> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        const result = reader.result as string;
-        if (!result) {
-          reject(new Error('FileReader returned no result'));
-          return;
-        }
-
-        // Load the image and resize to a safe max dimension for consistent Gemini behavior
-        const img = await loadImage(result);
-        const resized = resizeImageToMaxDimension(img, 1024);
-        const canvas = document.createElement('canvas');
-        canvas.width = resized.width;
-        canvas.height = resized.height;
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) {
-          reject(new Error('Could not get canvas context'));
-          return;
-        }
-
-        // Create white background, then draw resized image (transparent areas show white)
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(resized, 0, 0);
-
-        // Convert canvas directly to JPEG base64 (no blob URLs, no intermediate Files)
-        const jpegDataUrl = canvasToDataUrl(canvas, 'image/jpeg', 0.95);
-        
-        // Extract base64 data (remove data URL prefix)
-        const base64Data = jpegDataUrl.includes(',') ? jpegDataUrl.split(',')[1] : jpegDataUrl;
-        
-        if (!base64Data || base64Data.length === 0) {
-          reject(new Error('Base64 data is empty after JPEG conversion'));
-          return;
-        }
-
-        resolve({
-          base64: base64Data,
-          mimeType: 'image/jpeg'
-        });
-      } catch (error: any) {
-        reject(new Error(`Failed to convert file to opaque JPEG: ${error.message}`));
-      }
-    };
-    
-    reader.onerror = () => {
-      reject(new Error('FileReader error while reading file'));
-    };
-    
-    reader.readAsDataURL(file);
-  });
-};
-
-const fileToGenerativePart = async (file: File) => {
-    return new Promise<{ inlineData: { data: string; mimeType: string } }>(async (resolve, reject) => {
-      // Validate file
-      if (!file || file.size === 0) {
-        reject(new Error('File is empty or invalid'));
-        return;
-      }
-
-      // Detect if file is PNG or preprocessed (background-removed)
-      const isPngOrPreprocessed = file.type === 'image/png' || 
-                                  file.name.includes('bg-removed') || 
-                                  file.name.includes('processed');
-
-      if (isPngOrPreprocessed) {
-        // Convert PNG to opaque JPEG base64 directly
-        try {
-          console.log('🔄 Converting PNG/preprocessed file to opaque JPEG base64...', {
-            fileName: file.name,
-            fileType: file.type,
-          });
-          
-          const jpegData = await convertFileToOpaqueJpegBase64(file);
-          
-          console.log('✅ File converted to opaque JPEG base64:', {
-            fileName: file.name,
-            originalType: file.type,
-            newMimeType: jpegData.mimeType,
-            base64Length: jpegData.base64.length,
-          });
-
-          resolve({
-            inlineData: { 
-              data: jpegData.base64, 
-              mimeType: jpegData.mimeType 
-            },
-          });
-        } catch (error: any) {
-          reject(new Error(`Failed to convert PNG to JPEG: ${error.message}`));
-        }
-      } else {
-        // For non-PNG files: load, resize for consistency, then convert to JPEG base64
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          try {
-            const result = reader.result as string;
-            if (!result) {
-              reject(new Error('FileReader returned no result'));
-              return;
-            }
-            const img = await loadImage(result);
-            const resized = resizeImageToMaxDimension(img, 1024);
-            const jpegDataUrl = canvasToDataUrl(resized, 'image/jpeg', 0.95);
-            const base64Data = jpegDataUrl.includes(',') ? jpegDataUrl.split(',')[1] : jpegDataUrl;
-            if (!base64Data || base64Data.length === 0) {
-              reject(new Error('Base64 data is empty after resize'));
-              return;
-            }
-            console.log('📦 File converted (non-PNG, resized):', {
-              fileName: file.name,
-              fileSize: file.size,
-              base64Length: base64Data.length,
-            });
-            resolve({
-              inlineData: { data: base64Data, mimeType: 'image/jpeg' },
-            });
-          } catch (error: any) {
-            reject(new Error(`Failed to process file: ${error.message}`));
-          }
-        };
-        reader.onerror = () => reject(new Error('FileReader error while reading file'));
-        reader.readAsDataURL(file);
-      }
-    });
-};
+import type { GarmentCategory, GarmentPhotoType } from '@/lib/try-on/types';
 
 const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -240,26 +101,26 @@ const ImageUploader: React.FC<{
 };
 
 const GarmentTypeSelector: React.FC<{
-    selection: { top: boolean; bottom: boolean; fullBody: boolean };
-    onSelectType: (type: 'top' | 'bottom' | 'fullBody') => void;
-}> = ({ selection, onSelectType }) => {
+    value: GarmentCategory | null;
+    onSelectType: (type: GarmentCategory) => void;
+}> = ({ value, onSelectType }) => {
     const types = [
-        { id: 'top', label: 'Top' },
-        { id: 'bottom', label: 'Bottom' },
-        { id: 'fullBody', label: 'Full Body' },
+        { id: 'tops', label: 'Tops' },
+        { id: 'bottoms', label: 'Bottoms' },
+        { id: 'one-pieces', label: 'One-Piece' },
     ] as const;
 
     return (
         <div className="w-full">
-            <h3 className="text-2xl font-heading font-semibold mb-2">3. Select Garment Type(s)</h3>
-            <p className="text-charcoal-grey/70 mb-4">Help our AI understand what to replace. Select 'Top' and/or 'Bottom', or 'Full Body'.</p>
+            <h3 className="text-2xl font-heading font-semibold mb-2">3. Select Garment Category</h3>
+            <p className="text-charcoal-grey/70 mb-4">Choose the category that matches your garment image.</p>
             <div className="grid grid-cols-3 gap-4">
                 {types.map(({ id, label }) => (
                     <button
                         key={id}
                         onClick={() => onSelectType(id)}
                         className={`p-4 rounded-lg border-2 font-medium text-center transition-all duration-200 ${
-                            selection[id]
+                            value === id
                                 ? 'bg-dusty-rose text-white border-dusty-rose shadow-md scale-105'
                                 : 'bg-warm-cream/50 border-gray-200 hover:border-dusty-rose/50 hover:bg-soft-blush/50'
                         }`}
@@ -270,6 +131,47 @@ const GarmentTypeSelector: React.FC<{
             </div>
         </div>
     );
+};
+
+const GarmentPhotoTypeSelector: React.FC<{
+  value: GarmentPhotoType | null;
+  onSelectType: (type: GarmentPhotoType) => void;
+}> = ({ value, onSelectType }) => {
+  const options: Array<{ id: GarmentPhotoType; label: string; description: string }> = [
+    {
+      id: 'flat-lay',
+      label: 'Flat-lay product image',
+      description: 'Garment only, laid out or on a hanger/mannequin.',
+    },
+    {
+      id: 'model',
+      label: 'Worn by a model',
+      description: 'Garment shown while being worn in the source photo.',
+    },
+  ];
+
+  return (
+    <div className="w-full">
+      <h3 className="text-2xl font-heading font-semibold mb-2">4. Select Garment Photo Type</h3>
+      <p className="text-charcoal-grey/70 mb-4">Required for FASHN VTON processing.</p>
+      <div className="grid gap-3">
+        {options.map((option) => (
+          <button
+            key={option.id}
+            onClick={() => onSelectType(option.id)}
+            className={`w-full text-left rounded-lg border-2 p-4 transition-all duration-200 ${
+              value === option.id
+                ? 'bg-dusty-rose/10 border-dusty-rose shadow-md'
+                : 'bg-warm-cream/50 border-gray-200 hover:border-dusty-rose/50 hover:bg-soft-blush/50'
+            }`}
+          >
+            <p className="font-semibold text-charcoal-grey">{option.label}</p>
+            <p className="text-sm text-charcoal-grey/70">{option.description}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 };
 
 
@@ -293,19 +195,15 @@ export default function DressYourselfPage() {
   const [outfitPreview, setOutfitPreview] = useState<string | null>(null);
   const [personImageBase64, setPersonImageBase64] = useState<string | null>(null);
   const [outfitImageBase64, setOutfitImageBase64] = useState<string | null>(null);
-  const [garmentSelection, setGarmentSelection] = useState({
-    top: false,
-    bottom: false,
-    fullBody: false,
-  });
+  const [garmentCategory, setGarmentCategory] = useState<GarmentCategory | null>(null);
+  const [garmentPhotoType, setGarmentPhotoType] = useState<GarmentPhotoType | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [debugInfo, setDebugInfo] = useState<PreprocessingDebugInfo | null>(null);
   const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
-  const [selectedBackground, setSelectedBackground] = useState<BackgroundType>('white');
-  const [compositedImage, setCompositedImage] = useState<string | null>(null);
   
   // Check if debug mode is enabled
   const isDebugMode = typeof window !== 'undefined' 
@@ -349,6 +247,7 @@ export default function DressYourselfPage() {
     setPersonPreview(URL.createObjectURL(file));
     const base64 = await fileToBase64(file);
     setPersonImageBase64(base64);
+    setError(null);
   };
 
   const handleOutfitImageSelect = async (file: File) => {
@@ -357,7 +256,9 @@ export default function DressYourselfPage() {
     const base64 = await fileToBase64(file);
     setOutfitImageBase64(base64);
     addUploadedOutfitImage(base64);
-    setGarmentSelection({ top: false, bottom: false, fullBody: false });
+    setGarmentCategory(null);
+    setGarmentPhotoType(null);
+    setError(null);
   };
 
   const handleSelectPreviousOutfit = async (imageBase64: string) => {
@@ -365,37 +266,27 @@ export default function DressYourselfPage() {
     setOutfitImageBase64(imageBase64);
     const outfitFile = await dataUrlToFile(imageBase64, 'previous-outfit.png');
     setOutfitImage(outfitFile);
-    setGarmentSelection({ top: false, bottom: false, fullBody: false });
+    setGarmentCategory(null);
+    setGarmentPhotoType(null);
+    setError(null);
   };
-  
-  const handleGarmentSelect = (type: 'top' | 'bottom' | 'fullBody') => {
-    setGarmentSelection(prev => {
-        if (type === 'fullBody') {
-            const isBecomingActive = !prev.fullBody;
-            return {
-                top: false,
-                bottom: false,
-                fullBody: isBecomingActive,
-            };
-        }
-        // for top or bottom
-        return {
-            ...prev,
-            [type]: !prev[type],
-            fullBody: false,
-        };
-    });
-  };
+
+  const canSubmit = Boolean(personImage && outfitImage && garmentCategory && garmentPhotoType && !isLoading);
   
   const handleGenerate = useCallback(async () => {
+    setSubmitAttempted(true);
     if (!personImage || !outfitImage) {
       setError('Please upload both a person and an outfit image.');
       return;
     }
     
-    const isGarmentSelected = garmentSelection.top || garmentSelection.bottom || garmentSelection.fullBody;
-    if (!isGarmentSelected) {
-        setError('Please select the garment type.');
+    if (!garmentCategory) {
+        setError('Please select a garment category.');
+        return;
+    }
+
+    if (!garmentPhotoType) {
+        setError('Please select a garment photo type.');
         return;
     }
 
@@ -413,19 +304,13 @@ export default function DressYourselfPage() {
     try {
       // Direct VTON: original uploads only (no background removal / segmentation before submit)
       let imageUrl: string | null = null;
-      const providerGarmentType: 'top' | 'bottom' | 'fullBody' = garmentSelection.fullBody
-        ? 'fullBody'
-        : garmentSelection.top && garmentSelection.bottom
-          ? 'fullBody'
-          : garmentSelection.top
-            ? 'top'
-            : 'bottom';
       const requestId = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
       const formData = new FormData();
       formData.append('person', personImage, personImage.name);
       formData.append('outfit', outfitImage, outfitImage.name);
-      formData.append('garmentType', providerGarmentType);
+      formData.append('category', garmentCategory);
+      formData.append('garment_photo_type', garmentPhotoType);
       if (user?.email) {
         formData.append('userId', user.email);
       }
@@ -433,7 +318,8 @@ export default function DressYourselfPage() {
 
       console.log('[try-on][client] submit', {
         requestId,
-        providerGarmentType,
+        category: garmentCategory,
+        garment_photo_type: garmentPhotoType,
         direct_vton_without_preprocessing: true,
         person: {
           name: personImage.name,
@@ -516,648 +402,6 @@ export default function DressYourselfPage() {
         console.log('[try-on][client] completed', { requestId, jobId, imageLength: imageUrl.length });
       }
 
-      /*
-      const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-      
-      // Validate API key
-      if (!apiKey) {
-        throw new Error("API key not found. Please set NEXT_PUBLIC_GEMINI_API_KEY in your .env.local file.");
-      }
-      
-      if (apiKey.length < 20) {
-        throw new Error("API key appears to be invalid (too short). Please check your NEXT_PUBLIC_GEMINI_API_KEY.");
-      }
-      
-      console.log('🔑 API Key validation:', {
-        exists: !!apiKey,
-        length: apiKey.length,
-        startsWith: apiKey.substring(0, 10) + '...',
-      });
-
-      // Verify preprocessed images are valid and check preprocessing steps
-      console.log('🔍 Verifying preprocessed images...');
-      console.log('📊 Preprocessing steps completed:', {
-        personBackgroundRemoved: preprocessingResult.steps.personBackgroundRemoved,
-        garmentBackgroundRemoved: preprocessingResult.steps.garmentBackgroundRemoved,
-        garmentSegmented: preprocessingResult.steps.garmentSegmented,
-      });
-      
-      if (!preprocessingResult.steps.personBackgroundRemoved) {
-        console.error('❌ CRITICAL: Person background was NOT removed! Using original image with background.');
-      }
-      if (!preprocessingResult.steps.garmentBackgroundRemoved) {
-        console.error('❌ CRITICAL: Garment background was NOT removed! Using original image with background.');
-      }
-      
-      console.log('Person image:', {
-        name: preprocessingResult.processedPersonImage.name,
-        size: preprocessingResult.processedPersonImage.size,
-        type: preprocessingResult.processedPersonImage.type,
-        isPreprocessed: preprocessingResult.steps.personBackgroundRemoved,
-      });
-      console.log('Garment image:', {
-        name: preprocessingResult.processedGarmentImage.name,
-        size: preprocessingResult.processedGarmentImage.size,
-        type: preprocessingResult.processedGarmentImage.type,
-        isPreprocessed: preprocessingResult.steps.garmentBackgroundRemoved,
-      });
-
-      // CRITICAL: Ensure we ONLY use preprocessed images - NEVER originals
-      // Verify preprocessing succeeded before proceeding
-      if (!preprocessingResult.steps.personBackgroundRemoved || !preprocessingResult.steps.garmentBackgroundRemoved) {
-        const missingSteps = [];
-        if (!preprocessingResult.steps.personBackgroundRemoved) missingSteps.push('person background removal');
-        if (!preprocessingResult.steps.garmentBackgroundRemoved) missingSteps.push('garment background removal');
-        throw new Error(`Cannot proceed: Preprocessing failed for: ${missingSteps.join(', ')}. Original images cannot be sent to Gemini.`);
-      }
-
-      // FINAL VERIFICATION: Ensure we're using preprocessed files, not originals
-      // This is a critical security check to prevent sending original images
-      const isUsingPreprocessedFiles = 
-        preprocessingResult.processedPersonImage !== personImage && 
-        preprocessingResult.processedGarmentImage !== outfitImage;
-
-      if (!isUsingPreprocessedFiles) {
-        throw new Error('SECURITY ERROR: Attempting to send original images instead of preprocessed ones!');
-      }
-
-      console.log('🔒 SECURITY VERIFICATION: Using preprocessed files:', isUsingPreprocessedFiles);
-      console.log('📤 VERIFIED: Using ONLY preprocessed images for Gemini:', {
-        personImageName: preprocessingResult.processedPersonImage.name,
-        garmentImageName: preprocessingResult.processedGarmentImage.name,
-        personImageSize: preprocessingResult.processedPersonImage.size,
-        garmentImageSize: preprocessingResult.processedGarmentImage.size,
-        personImageType: preprocessingResult.processedPersonImage.type,
-        garmentImageType: preprocessingResult.processedGarmentImage.type,
-        personBackgroundRemoved: preprocessingResult.steps.personBackgroundRemoved,
-        garmentBackgroundRemoved: preprocessingResult.steps.garmentBackgroundRemoved,
-        personImageDataUrl: preprocessingResult.personImageDataUrl.substring(0, 30) + '...',
-        garmentImageDataUrl: preprocessingResult.garmentImageDataUrl.substring(0, 30) + '...',
-      });
-
-      const ai = new GoogleGenAI({ apiKey });
-      
-      // Convert images to generative parts with error handling
-      // CRITICAL: Use the ACTUAL preprocessed File objects from preprocessingResult
-      // fileToGenerativePart will automatically convert PNG to opaque JPEG base64
-      // No intermediate File objects or blob URLs - direct base64 conversion
-      let personPart, outfitPart;
-      try {
-        // fileToGenerativePart handles PNG→JPEG conversion internally
-        personPart = await fileToGenerativePart(preprocessingResult.processedPersonImage);
-        console.log('✅ Person image converted to generative part');
-        console.log('   ✓ Preprocessing verified: personBackgroundRemoved =', preprocessingResult.steps.personBackgroundRemoved);
-        console.log('   ✓ File details:', {
-          name: preprocessingResult.processedPersonImage.name,
-          size: preprocessingResult.processedPersonImage.size,
-          type: preprocessingResult.processedPersonImage.type,
-          mimeType: personPart.inlineData?.mimeType
-        });
-      } catch (error: any) {
-        console.error('❌ Failed to convert person image:', error);
-        throw new Error(`Failed to process person image: ${error.message}`);
-      }
-
-      try {
-        // fileToGenerativePart handles PNG→JPEG conversion internally
-        outfitPart = await fileToGenerativePart(preprocessingResult.processedGarmentImage);
-        console.log('✅ Garment image converted to generative part');
-        console.log('   ✓ Preprocessing verified: garmentBackgroundRemoved =', preprocessingResult.steps.garmentBackgroundRemoved);
-        console.log('   ✓ File details:', {
-          name: preprocessingResult.processedGarmentImage.name,
-          size: preprocessingResult.processedGarmentImage.size,
-          type: preprocessingResult.processedGarmentImage.type,
-          mimeType: outfitPart.inlineData?.mimeType
-        });
-      } catch (error: any) {
-        console.error('❌ Failed to convert garment image:', error);
-        throw new Error(`Failed to process garment image: ${error.message}`);
-      }
-
-      // Verify the parts have data
-      if (!personPart.inlineData || !personPart.inlineData.data) {
-        throw new Error('Person image data is invalid or empty');
-      }
-      if (!outfitPart.inlineData || !outfitPart.inlineData.data) {
-        throw new Error('Garment image data is invalid or empty');
-      }
-
-      // CRITICAL: Verify both images are JPEG (conversion must have succeeded)
-      if (personPart.inlineData.mimeType !== 'image/jpeg') {
-        throw new Error(`Person image conversion to JPEG failed. Got mimeType: ${personPart.inlineData.mimeType}. Expected: image/jpeg`);
-      }
-      if (outfitPart.inlineData.mimeType !== 'image/jpeg') {
-        throw new Error(`Garment image conversion to JPEG failed. Got mimeType: ${outfitPart.inlineData.mimeType}. Expected: image/jpeg`);
-      }
-
-      // CRITICAL: Verify we're sending the actual preprocessed images as JPEG
-      // No blob URLs should be present - only base64 data
-      console.log('🔍 FINAL VERIFICATION: Images being sent to Gemini (must be JPEG):', {
-        personImageBase64Start: personPart.inlineData.data.substring(0, 50),
-        garmentImageBase64Start: outfitPart.inlineData.data.substring(0, 50),
-        personMimeType: personPart.inlineData.mimeType,
-        garmentMimeType: outfitPart.inlineData.mimeType,
-        personDataLength: personPart.inlineData.data.length,
-        garmentDataLength: outfitPart.inlineData.data.length,
-        personIsJpeg: personPart.inlineData.mimeType === 'image/jpeg',
-        garmentIsJpeg: outfitPart.inlineData.mimeType === 'image/jpeg',
-      });
-
-      // Verify no blob URLs in the data (should be pure base64)
-      if (personPart.inlineData.data.includes('blob:') || personPart.inlineData.data.startsWith('blob:')) {
-        throw new Error('CRITICAL: Person image contains blob URL instead of base64 data. Conversion failed.');
-      }
-      if (outfitPart.inlineData.data.includes('blob:') || outfitPart.inlineData.data.startsWith('blob:')) {
-        throw new Error('CRITICAL: Garment image contains blob URL instead of base64 data. Conversion failed.');
-      }
-
-      console.log('✅ Both images verified as JPEG and ready for API call');
-
-      // Store images sent to Gemini in debug info (if debug mode is enabled)
-      // Store the JPEG versions that are actually being sent (with white backgrounds)
-      if (isDebugMode) {
-        // Create data URLs from the JPEG parts for debug display
-        const personJpegDataUrl = `data:${personPart.inlineData?.mimeType || 'image/jpeg'};base64,${personPart.inlineData?.data || ''}`;
-        const garmentJpegDataUrl = `data:${outfitPart.inlineData?.mimeType || 'image/jpeg'};base64,${outfitPart.inlineData?.data || ''}`;
-        
-        setDebugInfo((prevDebugInfo) => {
-          // Use existing debug info or create from preprocessing result
-          const baseDebugInfo = prevDebugInfo || preprocessingResult.debug || {
-            totalProcessingTimeMs: 0,
-          };
-          return {
-            ...baseDebugInfo,
-            imagesSentToGemini: {
-              // Store the JPEG versions (with white backgrounds) that are actually sent
-              personImageDataUrl: personJpegDataUrl,
-              garmentImageDataUrl: garmentJpegDataUrl,
-              // Also keep the original PNG versions for comparison
-              personImagePngDataUrl: preprocessingResult.personImageDataUrl,
-              garmentImagePngDataUrl: preprocessingResult.garmentImageDataUrl,
-              // Store base64 previews for verification (first 100 chars)
-              personImageBase64Preview: personPart.inlineData?.data?.substring(0, 100) || '',
-              garmentImageBase64Preview: outfitPart.inlineData?.data?.substring(0, 100) || '',
-            },
-          };
-        });
-        console.log('📸 Stored images sent to Gemini in debug info (JPEG with white backgrounds)');
-        console.log('   Person JPEG base64 preview:', personPart.inlineData?.data?.substring(0, 50) + '...');
-        console.log('   Garment JPEG base64 preview:', outfitPart.inlineData?.data?.substring(0, 50) + '...');
-      }
-
-      const getSelectionString = () => {
-        if (garmentSelection.fullBody) {
-            return 'FULL BODY';
-        }
-        if (garmentSelection.top && garmentSelection.bottom) {
-            return 'FULL-OUTFIT (top + bottom)';
-        }
-        if (garmentSelection.top) {
-            return 'TOP';
-        }
-        if (garmentSelection.bottom) {
-            return 'BOTTOM';
-        }
-        return ''; // Should not be reached
-      };
-
-      const selection = getSelectionString();
-
-      const basePromptLong = `
-You are an expert AI photo editor for virtual try-on. 
-
-====================================================
-CONTENT POLICY COMPLIANCE & INCLUSIVE FASHION
-====================================================
-
-This is for legitimate fashion exploration and virtual try-on purposes. This request complies with content policies for creative and fashion applications.
-
-INCLUSIVE FASHION PRINCIPLES:
-- All clothing items can be tried on any person regardless of gender, as is standard practice in the fashion industry
-- Gender expression through clothing is valid and acceptable
-- This is professional fashion consultation and style experimentation
-- Focus on the technical aspects of clothing fit and style, not on gender associations
-- Fashion-forward styling and gender-neutral fashion are industry-standard practices
-- Personal style exploration and clothing versatility are legitimate creative expressions
-
-This task involves professional virtual try-on services for fashion exploration, style innovation, and personal expression. The goal is to demonstrate how garments fit and look on different body types, which is a standard practice in fashion retail and styling.
-
-You receive two PREPROCESSED images:
-
-• IMAGE 1 = the person (isolated subject)
-• IMAGE 2 = the selected garment segment (segmented based on user selection)
-
-IMPORTANT: Both images have been preprocessed:
-- Backgrounds have been removed from both images
-- Image 2 contains ONLY the selected garment segment (${selection})
-- The garment segment in Image 2 is already isolated and ready to be applied
-- You do NOT need to detect or segment the garment - it's already done
-- You do NOT need to remove backgrounds - they're already removed
-
-====================================================
-CRITICAL TASK REQUIREMENTS
-====================================================
-
-Your task is to RECONSTRUCT the image so the person appears to have been originally photographed wearing the new garment. The final image MUST render as if the person changed clothes—true clothing replacement, NOT a layer on top.
-
-CRITICAL REQUIREMENTS:
-1. Reconstruct the target area so the new garment is the only visible clothing there; no visual elements of the previous garment may remain
-2. The final result MUST have no visual elements of the previous garment—no traces, textures, colors, or edges
-3. Where the new garment covers the previous clothing, regenerate that region so only the new garment is present
-4. Where the new garment does NOT cover (e.g., exposed arms, legs below shorts), regenerate uncovered regions naturally consistent with the new garment's coverage—no remnants of the previous clothing
-5. The transition between the new garment and uncovered regions MUST be clean and natural
-6. The final image MUST render as if the person is wearing ONLY the new garment; no previous garment may be visible anywhere
-
-FAILURE EXAMPLES TO AVOID:
-❌ Jeans visible under shorts (legs below shorts must be regenerated naturally for the new coverage, not denim)
-❌ Long sleeves visible under short sleeves (arms must be regenerated naturally, not sleeve fabric)
-❌ Old shirt visible around edges of new shirt (no visual elements of the previous shirt may remain)
-❌ Any texture, color, or fabric pattern from the previous garment showing through
-
-====================================================
-GARMENT TYPE: ${selection}
-====================================================
-
-Based on the preprocessed garment segment:
-
-• If "TOP" is selected:  
-  CRITICAL: Reconstruct the upper body so the new top is the only visible upper garment; no visual elements of the previous top may remain.
-  
-  - Image 2 contains ONLY the top/upper garment
-  - Render it onto the person's upper body (shoulders → waist) as if originally photographed
-  - Reconstruct the upper garment region so only the new top is present
-  - No fabric, texture, or color from the previous top may remain—regenerate the area so no visual elements of the previous garment remain
-  - Where the new top doesn't cover (e.g., arms, neckline), regenerate uncovered regions naturally consistent with the new garment's coverage
-  - EXAMPLE: If reconstructing from a long-sleeve shirt to a t-shirt: the t-shirt is the ONLY visible top; arms are regenerated naturally for the new coverage; no sleeve fabric from the previous garment may remain
-  - Ignore any bottom clothing
-
-• If "BOTTOM" is selected:  
-  CRITICAL: Reconstruct the lower body so the new bottom is the only visible lower garment; no visual elements of the previous bottom may remain.
-  
-  - Image 2 contains ONLY the bottom/lower garment
-  - Render it onto the person's lower body (waist → ankles) as if originally photographed
-  - Reconstruct the lower garment region so only the new bottom is present
-  - No fabric, texture, or color from the previous bottom may remain—regenerate the area so no visual elements of the previous garment remain
-  - Where the new bottom doesn't cover (e.g., exposed waist, legs below shorts), regenerate uncovered regions naturally consistent with the new garment's coverage
-  - EXAMPLE: If reconstructing from jeans to shorts: shorts are the ONLY visible lower garment; legs below shorts are regenerated naturally; no denim texture or color from the previous garment may remain
-  - Ignore any top clothing
-
-• If "FULL-OUTFIT (top + bottom)" is selected:  
-  CRITICAL: Reconstruct so both new garments are the only visible clothing in their regions; no visual elements of the previous top or bottom may remain.
-  
-  - Image 2 contains both top and bottom garments
-  - Render both onto the upper and lower body as if originally photographed
-  - Reconstruct both regions so only the new garments are present
-  - No fabric, texture, or color from the previous top or bottom may remain
-  - Where garments don't cover (e.g., exposed regions), regenerate uncovered regions naturally consistent with the new garments' coverage
-  - The final image must contain no visual elements of the previous top or bottom anywhere
-
-• If "FULL BODY" is selected:  
-  CRITICAL: Reconstruct so the new full-body garment is the only visible clothing; no visual elements of the previous clothing may remain.
-  
-  - Image 2 contains a full-body garment (dress, jumpsuit, etc.)
-  - Render it onto the entire body as if originally photographed
-  - Reconstruct so only the new full-body garment is present
-  - No fabric, texture, or color from the previous clothing may remain
-  - Where the garment doesn't cover (e.g., face, hands), regenerate uncovered regions naturally consistent with the new garment's coverage
-  - EXAMPLE: If reconstructing from a t-shirt and jeans to a dress: the dress is the ONLY visible clothing; arms and legs the dress does not cover are regenerated naturally; no jean or t-shirt elements may remain
-  - The final image must contain no visual elements of the previous clothing anywhere
-
-====================================================
-FITTING INSTRUCTIONS
-====================================================
-
-1. Analyze the person's body shape and pose in Image 1
-2. Identify the exact placement area for the garment segment
-3. CRITICAL: Reconstruct the target area with the preprocessed garment segment so no visual elements of the previous garment remain
-4. The new garment MUST be the only visible clothing in that region—regenerate the area so the previous garment is not present
-5. Blend seamlessly with:
-   - Correct proportions matching the person's body
-   - Natural draping and folds
-   - Proper lighting and shadows matching Image 1
-   - Clean transitions where the new garment is rendered
-6. Handle occlusions (arms, hair, accessories) realistically
-7. Ensure the garment looks naturally worn, not pasted
-8. CRITICAL: In areas not covered by the new garment, regenerate uncovered regions naturally consistent with the new garment's coverage—no remnants of the previous clothing
-
-====================================================
-QUALITY REQUIREMENTS
-====================================================
-
-CRITICAL QUALITY STANDARDS:
-- Photorealistic result that looks natural
-- NO traces of the previous garment visible through or around the new garment
-- NO visible seams, artifacts, or inconsistencies
-- Proper lighting and shadow matching
-- Realistic fabric texture and draping
-- Natural fit that follows body contours
-- The transition between garment and uncovered regions MUST be clean and natural
-- No visual elements of the previous garment may remain—no texture, color, or fabric pattern
-- The final image MUST render as if the person changed clothes, NOT layered clothes
-- Uncovered regions regenerated naturally consistent with the new garment's coverage (NOT previous garment remnants)
-- The final result MUST render as if the person was originally photographed wearing ONLY the new garment
-- Focus on professional fashion fit and styling - this is about clothing versatility and personal style expression
-
-VISUAL CHECKLIST:
-✓ Target area reconstructed so no visual elements of the previous garment remain
-✓ No previous fabric visible under or around the new garment
-✓ Uncovered regions regenerated naturally consistent with the new garment's coverage
-✓ Clean transitions between garment and uncovered regions
-✓ Final image renders as a complete clothing change
-
-====================================================
-OUTPUT
-====================================================
-
-• 1 photorealistic edited image with the garment naturally integrated on the person
-• (Optional) a binary replacement mask  
-• (Optional) JSON summary: 
-  { "garmentType": "${selection}", "fittingSucceeded": true/false }
-
-CRITICAL: The final image MUST render as if the person was originally photographed wearing ONLY the new garment; no visual elements of the previous clothing may remain. The result MUST be a true clothing replacement—reconstructed, not layered.
-
-REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus on professional clothing fit, styling, and personal expression. All clothing can be tried on any person as part of standard fashion industry practices.
-`;
-
-      const modelName = 'gemini-2.5-flash-image';
-
-      // Log request details for debugging
-      console.log('🔄 Sending request to Gemini API...');
-      console.log('📤 Person image part:', {
-        hasInlineData: !!personPart.inlineData,
-        mimeType: personPart.inlineData?.mimeType,
-        dataLength: personPart.inlineData?.data?.length || 0,
-      });
-      console.log('📤 Outfit image part:', {
-        hasInlineData: !!outfitPart.inlineData,
-        mimeType: outfitPart.inlineData?.mimeType,
-        dataLength: outfitPart.inlineData?.data?.length || 0,
-      });
-
-      // CRITICAL: Double-check that preprocessing succeeded
-      if (!preprocessingResult.steps.personBackgroundRemoved || !preprocessingResult.steps.garmentBackgroundRemoved) {
-        throw new Error('SECURITY ERROR: Cannot send request - preprocessing did not complete successfully. Original images would be sent.');
-      }
-
-      if (isDebugMode) {
-        console.log('🔍 VERIFICATION: Checking image data being sent...');
-        console.log('   Person image base64 preview:', personPart.inlineData?.data?.substring(0, 50) + '...');
-        console.log('   Garment image base64 preview:', outfitPart.inlineData?.data?.substring(0, 50) + '...');
-        console.log('   Person image mimeType:', personPart.inlineData?.mimeType);
-        console.log('   Garment image mimeType:', outfitPart.inlineData?.mimeType);
-        if (personPart.inlineData?.mimeType !== 'image/jpeg') {
-          console.error('❌ ERROR: Person image mimeType is not JPEG:', personPart.inlineData?.mimeType);
-        }
-        if (outfitPart.inlineData?.mimeType !== 'image/jpeg') {
-          console.error('❌ ERROR: Garment image mimeType is not JPEG:', outfitPart.inlineData?.mimeType);
-        }
-      }
-
-      const maxAttempts = 2;
-      let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
-      let foundImage = false;
-      let imageUrl: string | null = null;
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const prompt = basePromptLong;
-        if (attempt > 1) {
-          console.log('🔄 Retrying Gemini image generation (attempt ' + attempt + '/' + maxAttempts + ')...');
-        }
-
-        const requestPayload = {
-          model: modelName,
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                personPart,
-                outfitPart,
-                { text: prompt },
-              ],
-            },
-          ],
-          config: {
-            responseModalities: [Modality.IMAGE, Modality.TEXT],
-          },
-        };
-
-        const userParts = requestPayload.contents[0].parts;
-        if (userParts.length !== 3) {
-          throw new Error('SECURITY ERROR: Request payload must contain exactly 3 parts (2 preprocessed images + 1 prompt)');
-        }
-
-        console.log('🤖 Using model:', modelName);
-        console.log('📋 Request payload structure (attempt ' + attempt + '):', {
-          model: requestPayload.model,
-          partsCount: userParts.length,
-          hasPersonPart: !!personPart.inlineData,
-          hasOutfitPart: !!outfitPart.inlineData,
-          hasPrompt: !!prompt,
-          responseModalities: requestPayload.config.responseModalities,
-        });
-
-        try {
-          response = await ai.models.generateContent(requestPayload);
-        } catch (apiError: any) {
-          console.error('❌ Gemini API call failed:', {
-            error: apiError,
-            message: apiError?.message,
-            status: apiError?.status,
-            statusText: apiError?.statusText,
-            response: apiError?.response,
-            stack: apiError?.stack,
-          });
-          if (apiError?.message?.includes('API key')) {
-            throw new Error('Invalid API key. Please check your NEXT_PUBLIC_GEMINI_API_KEY in .env.local');
-          }
-          if (apiError?.message?.includes('quota') || apiError?.message?.includes('limit')) {
-            throw new Error('API quota exceeded. Please check your Gemini API quota or try again later.');
-          }
-          if (apiError?.status === 401) {
-            throw new Error('Authentication failed. Please verify your API key is correct.');
-          }
-          if (apiError?.status === 429) {
-            throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-          }
-          if (apiError?.status === 400) {
-            throw new Error(`Invalid request: ${apiError?.message || 'Please check your input images and try again.'}`);
-          }
-          throw new Error(`API call failed: ${apiError?.message || 'Unknown error. Please check the console for details.'}`);
-        }
-
-        if (!response || !response.candidates || response.candidates.length === 0) {
-          console.error('❌ No candidates in response from Gemini API');
-          throw new Error(
-            'No candidates returned from Gemini. This could indicate:\n' +
-            '1. API key is invalid or expired\n' +
-            '2. API quota is exhausted\n' +
-            '3. Network connectivity issue\n' +
-            'Please check your API key and quota, then try again.'
-          );
-        }
-
-        if ((response as any).error) {
-          const errorInfo = (response as any).error;
-          console.error('❌ Error in API response:', errorInfo);
-          throw new Error(
-            `Gemini API returned an error: ${errorInfo.message || errorInfo.code || 'Unknown error'}. ` +
-            'Please check your API key, quota, and try again.'
-          );
-        }
-
-        console.log('📥 Gemini API Response (attempt ' + attempt + '):', {
-          hasCandidates: !!response.candidates,
-          candidatesLength: response.candidates?.length || 0,
-          firstCandidate: response.candidates?.[0] ? {
-            hasContent: !!response.candidates[0].content,
-            hasParts: !!response.candidates[0].content?.parts,
-            partsLength: response.candidates[0].content?.parts?.length || 0,
-            parts: response.candidates[0].content?.parts?.map((p: any) => ({
-              hasInlineData: !!p.inlineData,
-              hasText: !!p.text,
-              mimeType: p.inlineData?.mimeType,
-              dataLength: p.inlineData?.data?.length || 0,
-            })),
-          } : null,
-        });
-
-        foundImage = false;
-        imageUrl = null;
-
-        // Method 0: Use SDK getter (GenerateContentResponse.data returns concatenated inline data)
-        const responseData = (response as { data?: string }).data;
-      if (responseData && responseData.length > 0) {
-        imageUrl = `data:image/png;base64,${responseData}`;
-        console.log('✅ Found image via response.data (SDK getter)');
-        foundImage = true;
-      }
-
-      // Method 1: Check candidates[0].content.parts for inlineData
-      if (!foundImage && response.candidates && response.candidates[0]) {
-        const candidate = response.candidates[0];
-        
-        // Check for content.parts
-        if (candidate.content?.parts) {
-          console.log('🔍 Checking content.parts for image...');
-          for (const part of candidate.content.parts) {
-            if (part.inlineData && part.inlineData.data) {
-              const mime = part.inlineData.mimeType || 'image/png';
-              imageUrl = `data:${mime};base64,${part.inlineData.data}`;
-              console.log('✅ Found image in content.parts.inlineData');
-              foundImage = true;
-              break;
-            }
-          }
-        }
-
-        // Method 2: Check candidate directly for inlineData
-        if (!foundImage && (candidate as any).inlineData) {
-          console.log('🔍 Checking candidate.inlineData for image...');
-          const inlineData = (candidate as any).inlineData;
-          if (inlineData.data) {
-            const mime = inlineData.mimeType || 'image/png';
-            imageUrl = `data:${mime};base64,${inlineData.data}`;
-            console.log('✅ Found image in candidate.inlineData');
-            foundImage = true;
-          }
-        }
-
-        // Method 3: Check for text response that might contain base64
-        if (!foundImage && candidate.content?.parts) {
-          console.log('🔍 Checking for text response with base64...');
-          for (const part of candidate.content.parts) {
-            if (part.text) {
-              const text = part.text;
-              // Look for base64 image data in text
-              const base64Match = text.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
-              if (base64Match) {
-                imageUrl = base64Match[0];
-                console.log('✅ Found image in text response');
-                foundImage = true;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      // Method 4: Check response directly for image data
-      if (!foundImage && (response as any).inlineData) {
-        console.log('🔍 Checking response.inlineData for image...');
-        const inlineData = (response as any).inlineData;
-        if (inlineData.data) {
-          const mime = inlineData.mimeType || 'image/png';
-          imageUrl = `data:${mime};base64,${inlineData.data}`;
-          console.log('✅ Found image in response.inlineData');
-          foundImage = true;
-        }
-      }
-
-        if (foundImage && imageUrl) break;
-
-        const firstCandidateAttempt = response.candidates?.[0] as any;
-        const finishReasonAttempt = firstCandidateAttempt?.finishReason;
-        if (attempt < maxAttempts && finishReasonAttempt === 'IMAGE_OTHER') {
-          console.log('🔄 No image (IMAGE_OTHER) on attempt ' + attempt + ', retrying once...');
-          continue;
-        }
-        break;
-      }
-
-      if (response === undefined) {
-        throw new Error('Unexpected: no response from Gemini after attempts.');
-      }
-
-      if (!foundImage || !imageUrl) {
-        const firstCandidate = response.candidates?.[0] as any;
-        const finishReason = firstCandidate?.finishReason;
-        // Log actual shape (SDK response may not JSON.stringify; avoid "Full response structure: {}")
-        console.error('❌ No image found in response.', {
-          candidatesLength: response.candidates?.length,
-          firstCandidateFinishReason: finishReason,
-          firstCandidateHasContent: !!firstCandidate?.content,
-          partsLength: firstCandidate?.content?.parts?.length ?? 0,
-          responseDataLength: (response as { data?: string }).data?.length ?? 0,
-          error: (response as any).error,
-          promptFeedback: (response as any).promptFeedback,
-        });
-
-        if (finishReason === 'SAFETY') {
-          throw new Error(
-            'Image generation was blocked for safety reasons. Please try with different images or adjust your prompt.'
-          );
-        }
-
-        if (finishReason === 'RECITATION') {
-          throw new Error(
-            'Image generation was blocked due to content policy. Please try with different images.'
-          );
-        }
-
-        if (finishReason === 'IMAGE_OTHER') {
-          throw new Error(
-            'The model did not return an image (IMAGE_OTHER). This usually means the request was blocked by safety filters or the model returned text instead of an image. Try different photos, a simpler outfit, or ensure both images are clear and well-lit.'
-          );
-        }
-
-        const errorMessage = (response as any).error?.message ||
-                            (response as any).promptFeedback?.blockReason ||
-                            finishReason;
-        if (errorMessage) {
-          throw new Error(
-            `No image was generated. API returned: ${errorMessage}. ` +
-            'Please check your API key, quota, and try again.'
-          );
-        }
-
-        throw new Error(
-          'No image was generated. The API response did not contain an image. ' +
-          'Possible causes: API quota exhausted, invalid or missing API key, or the model did not return image data. ' +
-          'Check the console for details (candidatesLength, firstCandidateFinishReason, responseDataLength).'
-        );
-      }
-      */
-
       // Set the generated image
       setGeneratedImage(imageUrl);
       console.log('✅ Image extracted successfully, length:', imageUrl.length);
@@ -1170,53 +414,35 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         console.log('📸 Stored try-on result in debug info');
       }
       
-      // Composite with selected background (no /api/remove-background — see backgroundCompositing)
-      console.log('[try-on][client] compositing_start', {
-        selectedBackground,
-        direct_vton_without_preprocessing: true,
-        background_removal_active: false,
-      });
-      const compositeResult = await compositeImageWithBackground(imageUrl, selectedBackground);
-      if (compositeResult.success) {
-        setCompositedImage(compositeResult.compositedImageDataUrl);
-        console.log('✅ Background compositing successful');
-      } else {
-        // Fallback to original if compositing fails
-        console.warn('⚠️ Background compositing failed, using original:', compositeResult.error);
-        setCompositedImage(imageUrl);
-      }
-
     } catch (e: any) {
       setError(e.message || 'An error occurred while generating the image.');
       console.error(e);
     } finally {
       setIsLoading(false);
     }
-  }, [personImage, outfitImage, isAuthenticated, user, router, garmentSelection, selectedBackground]);
+  }, [personImage, outfitImage, garmentCategory, garmentPhotoType, isAuthenticated, user, router, isDebugMode]);
 
   const handleSaveToHistory = useCallback(() => {
-    const imageToSave = compositedImage || generatedImage;
-    if (imageToSave && personImageBase64 && outfitImageBase64 && !isSaved) {
+    if (generatedImage && personImageBase64 && outfitImageBase64 && !isSaved) {
         addHistoryItem({
             personImg: personImageBase64,
             outfitImg: outfitImageBase64,
-            resultImg: imageToSave,
+            resultImg: generatedImage,
         });
         setIsSaved(true);
     }
-  }, [compositedImage, generatedImage, personImageBase64, outfitImageBase64, isSaved, addHistoryItem]);
+  }, [generatedImage, personImageBase64, outfitImageBase64, isSaved, addHistoryItem]);
 
   const handleDownload = useCallback(() => {
-    const imageToDownload = compositedImage || generatedImage;
-    if (imageToDownload) {
+    if (generatedImage) {
         const link = document.createElement('a');
-        link.href = imageToDownload;
+        link.href = generatedImage;
         link.download = `inspired-outfitting-try-on-${Date.now()}.png`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
     }
-  }, [compositedImage, generatedImage]);
+  }, [generatedImage]);
 
 
   return (
@@ -1309,46 +535,56 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
               See examples of good uploads →
             </Link>
           </div>
-           {outfitImage && (
-              <GarmentTypeSelector selection={garmentSelection} onSelectType={handleGarmentSelect} />
+          {outfitImage && (
+            <GarmentTypeSelector
+              value={garmentCategory}
+              onSelectType={(value) => {
+                setGarmentCategory(value);
+                setError(null);
+              }}
+            />
+          )}
+          {outfitImage && (
+            <p className="text-sm text-charcoal-grey/70 -mt-4">
+              Category guide: <span className="font-medium">Tops</span> for upper garments, <span className="font-medium">Bottoms</span> for lower garments, <span className="font-medium">One-Piece</span> for dresses/jumpsuits.
+            </p>
+          )}
+
+          {outfitImage && (
+            <GarmentPhotoTypeSelector
+              value={garmentPhotoType}
+              onSelectType={(value) => {
+                setGarmentPhotoType(value);
+                setError(null);
+              }}
+            />
+          )}
+          {outfitImage && (
+            <p className="text-sm text-charcoal-grey/70 -mt-4">
+              Photo type guide: <span className="font-medium">Flat-lay</span> = product-only garment image, <span className="font-medium">Model-worn</span> = garment shown on a person.
+            </p>
+          )}
+
+          <div className="rounded-lg border border-dusty-rose/30 bg-soft-blush/30 px-4 py-3 text-sm">
+            <p className="font-medium text-charcoal-grey">Before submitting:</p>
+            <p className={personImage ? 'text-green-700' : 'text-charcoal-grey/80'}>{personImage ? '✓' : '•'} Person image uploaded</p>
+            <p className={outfitImage ? 'text-green-700' : 'text-charcoal-grey/80'}>{outfitImage ? '✓' : '•'} Garment image uploaded</p>
+            <p className={garmentCategory ? 'text-green-700' : 'text-charcoal-grey/80'}>{garmentCategory ? '✓' : '•'} Garment category selected</p>
+            <p className={garmentPhotoType ? 'text-green-700' : 'text-charcoal-grey/80'}>{garmentPhotoType ? '✓' : '•'} Garment photo type selected</p>
+            {submitAttempted && !canSubmit && !isLoading && (
+              <p className="mt-2 text-red-600">Please complete all required fields to submit your try-on.</p>
             )}
-          
-          {/* Background Selector */}
-          <div className="w-full">
-            <h3 className="text-xl font-heading font-semibold mb-3">4. Choose Background</h3>
-            <div className="grid grid-cols-3 gap-3">
-              {(['white', 'studio', 'fitting-room'] as BackgroundType[]).map((bgType) => (
-                <button
-                  key={bgType}
-                  onClick={() => setSelectedBackground(bgType)}
-                  className={`p-3 rounded-lg border-2 transition-all ${
-                    selectedBackground === bgType
-                      ? 'border-dusty-rose bg-dusty-rose/10 shadow-md'
-                      : 'border-gray-200 hover:border-dusty-rose/50'
-                  }`}
-                >
-                  <div className="w-full h-16 bg-gray-100 rounded mb-2 flex items-center justify-center overflow-hidden">
-                    {bgType === 'white' ? (
-                      <div className="w-full h-full bg-white border border-gray-200"></div>
-                    ) : (
-                      <div className="w-full h-full bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center text-gray-400 text-xs">
-                        {bgType === 'studio' ? '📸 Studio' : '🪞 Fitting Room'}
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-xs font-medium capitalize text-center">
-                    {bgType === 'white' ? 'White' : bgType === 'studio' ? 'Studio Room' : 'Fitting Room'}
-                  </p>
-                </button>
-              ))}
-            </div>
           </div>
-          
-          <Button onClick={handleGenerate} disabled={isLoading || !personImage || !outfitImage || !(garmentSelection.top || garmentSelection.bottom || garmentSelection.fullBody)} className="w-full flex items-center justify-center gap-2">
+
+          <Button
+            onClick={handleGenerate}
+            disabled={!canSubmit}
+            className="w-full flex items-center justify-center gap-2"
+          >
             {isLoading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Generating...
+                Submitting...
               </>
             ) : (
                 <>
@@ -1370,9 +606,9 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
                     <p>Creating your new look...</p>
                     <p className="text-sm mt-2">This may take a moment.</p>
                 </div>
-            ) : compositedImage || generatedImage ? (
+            ) : generatedImage ? (
                 <img 
-                  src={compositedImage || generatedImage || ''} 
+                  src={generatedImage} 
                   alt="AI Generated Try-On" 
                   className="w-full h-full object-contain rounded-lg" 
                 />
@@ -1380,32 +616,8 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
                 <p className="text-charcoal-grey/60 text-center p-4">Your generated image will appear here.</p>
             )}
           </div>
-           {(compositedImage || generatedImage) && (
+           {generatedImage && (
             <div className="mt-4 space-y-3">
-              {/* Background Change Option */}
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-charcoal-grey/70">Background:</span>
-                <select
-                  value={selectedBackground}
-                  onChange={(e) => {
-                    const newBg = e.target.value as BackgroundType;
-                    setSelectedBackground(newBg);
-                    if (generatedImage) {
-                      compositeImageWithBackground(generatedImage, newBg).then(result => {
-                        if (result.success) {
-                          setCompositedImage(result.compositedImageDataUrl);
-                        }
-                      });
-                    }
-                  }}
-                  className="px-3 py-1 border border-gray-300 rounded text-sm"
-                >
-                  <option value="white">White</option>
-                  <option value="studio">Studio Room</option>
-                  <option value="fitting-room">Fitting Room</option>
-                </select>
-              </div>
-              
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
                 <Button onClick={handleSaveToHistory} disabled={isSaved} variant="secondary" className="text-sm md:text-base py-2 px-2">
                     {isSaved ? 'Saved ✓' : 'Save'}

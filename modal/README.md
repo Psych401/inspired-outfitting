@@ -5,7 +5,7 @@ Python worker that matches the Next.js virtual try-on scaffold:
 - **Ingress** (`try_on_api`): validates JSON, optional Bearer auth, returns **202** `{ "mode": "async", "providerJobId", "accepted" }`, and spawns GPU work.
 - **GPU** (`TryOnGpu`, **A10G**): loads weights from a **Modal Volume** (`/weights`), runs `TryOnPipeline`, then **POSTs** to your app’s `webhookUrl` with the same contract as `app/api/try-on/webhook/route.ts` (body fields + `X-Webhook-Secret` header).
 
-Field names are **camelCase** (`personBase64`, `jobId`, …) to match `lib/try-on/providers/modal-http.ts`, not snake_case.
+Field names are mostly **camelCase** with required FASHN fields `category` and `garment_photo_type` to match `lib/try-on/providers/modal-http.ts`.
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ Replace `URL`, `BEARER` (if using ingress auth), and base64 placeholders.
 curl -sS -X POST "https://YOUR_WORKSPACE--inspired-fashn-vton-try-on-api.modal.run/try-on" ^
   -H "Content-Type: application/json" ^
   -H "Authorization: Bearer YOUR_MODAL_INGRESS_API_KEY" ^
-  -d "{\"jobId\":\"test_job_1\",\"personBase64\":\"BASE64_PERSON\",\"outfitBase64\":\"BASE64_GARMENT\",\"personMime\":\"image/jpeg\",\"outfitMime\":\"image/jpeg\",\"garmentType\":\"top\",\"webhookUrl\":\"https://YOUR_APP/api/try-on/webhook\",\"webhookSecret\":\"SAME_AS_MODAL_WEBHOOK_SECRET\"}"
+  -d "{\"jobId\":\"test_job_1\",\"personBase64\":\"BASE64_PERSON\",\"outfitBase64\":\"BASE64_GARMENT\",\"personMime\":\"image/jpeg\",\"outfitMime\":\"image/jpeg\",\"category\":\"tops\",\"garment_photo_type\":\"flat-lay\",\"webhookUrl\":\"https://YOUR_APP/api/try-on/webhook\",\"webhookSecret\":\"SAME_AS_MODAL_WEBHOOK_SECRET\"}"
 ```
 
 On Unix shells, use single quotes around the JSON and `\` for line continuation.

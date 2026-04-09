@@ -2,8 +2,8 @@
 Modal worker: FASHN VTON v1.5 virtual try-on for the Inspired Outfitting Next.js backend.
 
 Contract matches lib/try-on/providers/modal-http.ts and app/api/try-on/webhook/route.ts:
-  POST JSON (camelCase): jobId, personBase64, outfitBase64, personMime, outfitMime,
-                         garmentType, webhookUrl, webhookSecret
+  POST JSON (camelCase/snake_case): jobId, personBase64, outfitBase64, personMime, outfitMime,
+                         category, garment_photo_type, webhookUrl, webhookSecret
   Response: { "mode": "async", "providerJobId": "<jobId>" }
   Webhook POST to webhookUrl with body + Authorization Bearer + X-Webhook-Secret header.
 """
@@ -65,8 +65,8 @@ COST_MIN_CONTAINERS = 0
 COST_BUFFER_CONTAINERS = 0
 COST_SCALEDOWN_WINDOW_SEC = 10
 
-# Default diffusion steps (override with FASHN_NUM_TIMESTEPS). Slightly lower than 30 to save GPU time.
-DEFAULT_FASHN_NUM_TIMESTEPS = 24
+# Default diffusion steps (override with FASHN_NUM_TIMESTEPS).
+DEFAULT_FASHN_NUM_TIMESTEPS = 30
 
 app = modal.App(APP_NAME)
 weights_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -395,14 +395,8 @@ def job_claim_coordinator(job_id: str, action: str) -> dict[str, Any]:
 # Inference helpers
 # -----------------------------------------------------------------------------
 
-GarmentType = Literal["top", "bottom", "fullBody"]
 FashnCategory = Literal["tops", "bottoms", "one-pieces"]
-
-GARMENT_TO_CATEGORY: dict[str, FashnCategory] = {
-    "top": "tops",
-    "bottom": "bottoms",
-    "fullBody": "one-pieces",
-}
+GarmentPhotoType = Literal["flat-lay", "model"]
 
 MAX_B64_CHARS = 40_000_000
 MAX_DECODED_BYTES = 30_000_000
@@ -414,7 +408,8 @@ class TryOnRequest(BaseModel):
     outfitBase64: str
     personMime: str | None = None
     outfitMime: str | None = None
-    garmentType: GarmentType
+    category: FashnCategory
+    garment_photo_type: GarmentPhotoType
     webhookUrl: str
     webhookSecret: str
 
@@ -441,16 +436,20 @@ def validate_try_on_payload(d: dict[str, Any]) -> dict[str, Any]:
         "jobId",
         "personBase64",
         "outfitBase64",
-        "garmentType",
+        "category",
+        "garment_photo_type",
         "webhookUrl",
         "webhookSecret",
     )
     for k in required:
         if k not in d or d[k] is None or (isinstance(d[k], str) and not d[k].strip()):
             raise ValueError(f"missing or empty field: {k}")
-    gt = d["garmentType"]
-    if gt not in GARMENT_TO_CATEGORY:
-        raise ValueError(f"garmentType must be one of {list(GARMENT_TO_CATEGORY)}")
+    category = d["category"]
+    if category not in ("tops", "bottoms", "one-pieces"):
+        raise ValueError("category must be one of ['tops', 'bottoms', 'one-pieces']")
+    garment_photo_type = d["garment_photo_type"]
+    if garment_photo_type not in ("flat-lay", "model"):
+        raise ValueError("garment_photo_type must be one of ['flat-lay', 'model']")
     url = str(d["webhookUrl"])
     allowed_dev = "localhost" in url or "127.0.0.1" in url
     if not url.startswith("https://") and not (allowed_dev and url.startswith("http://")):
@@ -539,7 +538,8 @@ class TryOnGpu:
         job_id = str(payload["jobId"])
         webhook_url = str(payload["webhookUrl"])
         secret = str(payload["webhookSecret"])
-        category = GARMENT_TO_CATEGORY[str(payload["garmentType"])]
+        category = str(payload["category"])
+        garment_photo_type = str(payload["garment_photo_type"])
         t0 = time.perf_counter()
         logger.info("gpu_run_start jobId=%s (same id as Next.js created)", job_id)
 
@@ -557,7 +557,7 @@ class TryOnGpu:
                 person_image=person,
                 garment_image=garment,
                 category=category,
-                garment_photo_type="model",
+                garment_photo_type=garment_photo_type,
                 num_samples=1,
                 num_timesteps=num_timesteps,
                 guidance_scale=1.5,
