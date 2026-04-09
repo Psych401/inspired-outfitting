@@ -206,6 +206,11 @@ export const removeBackground = async (
   imageFile: File,
   includeDebug: boolean = false
 ): Promise<BackgroundRemovalResult> => {
+  console.warn('[backgroundRemoval] removeBackground_invoked', {
+    background_removal_active: true,
+    includeDebug,
+    note: 'Not used by dress-yourself direct VTON; legacy/preprocessing only',
+  });
   // Try Replicate API first (server will check for API token)
   const replicateResult = await removeBackgroundWithReplicate(imageFile, includeDebug);
   if (replicateResult.success) {

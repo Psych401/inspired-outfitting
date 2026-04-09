@@ -7,8 +7,7 @@ import Button from '@/components/Button';
 import { UploadIcon, SparklesIcon, DownloadIcon } from '@/components/IconComponents';
 import { useRouter } from 'next/navigation';
 import PreviousOutfits from '@/components/PreviousOutfits';
-import { preprocessImages, PreprocessingDebugInfo } from '@/lib/preprocessingPipeline';
-import { GarmentType } from '@/lib/garmentSegmentation';
+import type { PreprocessingDebugInfo } from '@/lib/preprocessingPipeline';
 import { DebugPanel } from '@/components/DebugPanel';
 import { compositeImageWithBackground, BackgroundType, getBackgroundPreviewUrl } from '@/lib/backgroundCompositing';
 import { loadImage, imageToCanvas, canvasToDataUrl, resizeImageToMaxDimension } from '@/lib/imageProcessing';
@@ -301,8 +300,6 @@ export default function DressYourselfPage() {
   });
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isPreprocessing, setIsPreprocessing] = useState(false);
-  const [preprocessingProgress, setPreprocessingProgress] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [debugInfo, setDebugInfo] = useState<PreprocessingDebugInfo | null>(null);
@@ -409,71 +406,117 @@ export default function DressYourselfPage() {
     }
 
     setIsLoading(true);
-    setIsPreprocessing(true);
     setError(null);
     setGeneratedImage(null);
     setIsSaved(false);
-    setPreprocessingProgress('Starting preprocessing...');
 
     try {
-      // Determine garment type from selection
-      let garmentType: GarmentType = 'completeOutfit';
-      if (garmentSelection.fullBody) {
-        garmentType = 'fullBody';
-      } else if (garmentSelection.top && garmentSelection.bottom) {
-        garmentType = 'completeOutfit';
-      } else if (garmentSelection.top) {
-        garmentType = 'top';
-      } else if (garmentSelection.bottom) {
-        garmentType = 'bottom';
+      // Direct VTON: original uploads only (no background removal / segmentation before submit)
+      let imageUrl: string | null = null;
+      const providerGarmentType: 'top' | 'bottom' | 'fullBody' = garmentSelection.fullBody
+        ? 'fullBody'
+        : garmentSelection.top && garmentSelection.bottom
+          ? 'fullBody'
+          : garmentSelection.top
+            ? 'top'
+            : 'bottom';
+      const requestId = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      const formData = new FormData();
+      formData.append('person', personImage, personImage.name);
+      formData.append('outfit', outfitImage, outfitImage.name);
+      formData.append('garmentType', providerGarmentType);
+      if (user?.email) {
+        formData.append('userId', user.email);
+      }
+      formData.append('requestId', requestId);
+
+      console.log('[try-on][client] submit', {
+        requestId,
+        providerGarmentType,
+        direct_vton_without_preprocessing: true,
+        person: {
+          name: personImage.name,
+          size: personImage.size,
+          type: personImage.type,
+        },
+        outfit: {
+          name: outfitImage.name,
+          size: outfitImage.size,
+          type: outfitImage.type,
+        },
+      });
+
+      const submitRes = await fetch('/api/try-on', {
+        method: 'POST',
+        body: formData,
+      });
+      const submitBody = await submitRes.json().catch(() => ({}));
+      if (!submitRes.ok) {
+        console.error('[try-on][client] submit failed', {
+          requestId,
+          status: submitRes.status,
+          body: submitBody,
+        });
+        throw new Error(
+          (submitBody as { error?: string })?.error ??
+            `Try-on submit failed (${submitRes.status})`
+        );
       }
 
-      // Step 1: Preprocess images (background removal + segmentation)
-      setPreprocessingProgress('Removing backgrounds from images...');
-      const preprocessingResult = await preprocessImages(
-        personImage,
-        outfitImage,
-        {
-          removePersonBackground: true,
-          removeGarmentBackground: true,
-          segmentGarment: true,
-          garmentType,
-          useAdvancedSegmentation: false, // Set to true for better results (slower)
-          includeDebug: isDebugMode,
+      const jobId = (submitBody as { jobId?: string }).jobId;
+      if (!jobId) {
+        console.error('[try-on][client] missing jobId', { requestId, submitBody });
+        throw new Error('Try-on submit succeeded but no jobId was returned');
+      }
+      console.log('[try-on][client] queued', { requestId, jobId });
+
+      const pollEveryMs = 1500;
+      const timeoutMs = 240000;
+      const pollStarted = Date.now();
+      while (Date.now() - pollStarted < timeoutMs) {
+        const pollRes = await fetch(`/api/try-on/${jobId}`, { cache: 'no-store' });
+        const pollBody = await pollRes.json().catch(() => ({}));
+        if (!pollRes.ok) {
+          console.error('[try-on][client] poll failed', {
+            requestId,
+            jobId,
+            status: pollRes.status,
+            body: pollBody,
+          });
+          throw new Error(
+            (pollBody as { error?: string })?.error ??
+              `Try-on status check failed (${pollRes.status})`
+          );
         }
-      );
 
-      // Store debug info if available
-      if (isDebugMode && preprocessingResult.debug) {
-        setDebugInfo(preprocessingResult.debug);
-        console.log('✅ Preprocessing Debug Info stored:', preprocessingResult.debug);
-        console.log('🔍 Debug info state updated, button should appear');
-      } else {
-        console.log('⚠️ Debug mode:', isDebugMode, 'Debug result:', !!preprocessingResult.debug);
+        const status = (pollBody as { status?: string }).status;
+        console.log('[try-on][client] poll', { requestId, jobId, status, pollBody });
+        if (status === 'succeeded') {
+          imageUrl = (pollBody as { resultUrl?: string }).resultUrl ?? null;
+          break;
+        }
+        if (status === 'failed') {
+          const failed = pollBody as { error?: string; errorCode?: string };
+          throw new Error(
+            failed.error
+              ? `Try-on failed: ${failed.error}${failed.errorCode ? ` (${failed.errorCode})` : ''}`
+              : 'Try-on failed'
+          );
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollEveryMs));
       }
 
-      if (!preprocessingResult.success) {
-        throw new Error(preprocessingResult.error || 'Preprocessing failed');
+      if (!imageUrl) {
+        throw new Error('Try-on timed out before completion. Check /api/try-on logs for details.');
       }
 
-      // Verify that preprocessing actually succeeded for critical steps
-      // If background removal failed, we should not proceed with original images
-      if (!preprocessingResult.steps.personBackgroundRemoved) {
-        const errorMsg = 'Person background removal failed. Cannot proceed with original image. Please try again.';
-        console.error('❌', errorMsg);
-        throw new Error(errorMsg);
+      if (isDebugMode) {
+        console.log('[try-on][client] completed', { requestId, jobId, imageLength: imageUrl.length });
       }
-      if (!preprocessingResult.steps.garmentBackgroundRemoved) {
-        const errorMsg = 'Garment background removal failed. Cannot proceed with original image. Please try again.';
-        console.error('❌', errorMsg);
-        throw new Error(errorMsg);
-      }
-      
-      console.log('✅ All preprocessing steps completed successfully');
 
-      setPreprocessingProgress('Preprocessing complete. Generating try-on...');
-
-      // Step 2: Generate try-on with preprocessed images
+      /*
       const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
       
       // Validate API key
@@ -1113,33 +1156,26 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
           'Check the console for details (candidatesLength, firstCandidateFinishReason, responseDataLength).'
         );
       }
+      */
 
       // Set the generated image
       setGeneratedImage(imageUrl);
       console.log('✅ Image extracted successfully, length:', imageUrl.length);
 
-      // Store image received from Gemini in debug info (if debug mode is enabled)
       if (isDebugMode) {
         setDebugInfo((prevDebugInfo) => {
-          if (!prevDebugInfo) {
-            // If no debug info exists, create a minimal one
-            const newDebugInfo = preprocessingResult.debug || {
-              totalProcessingTimeMs: 0,
-            };
-            newDebugInfo.imageReceivedFromGemini = imageUrl;
-            return newDebugInfo;
-          }
-          // Update existing debug info
-          return {
-            ...prevDebugInfo,
-            imageReceivedFromGemini: imageUrl,
-          };
+          const base = prevDebugInfo ?? { totalProcessingTimeMs: 0 };
+          return { ...base, imageReceivedFromGemini: imageUrl };
         });
-        console.log('📸 Stored image received from Gemini in debug info');
+        console.log('📸 Stored try-on result in debug info');
       }
       
-      // Composite with selected background
-      console.log('🎨 Compositing with background:', selectedBackground);
+      // Composite with selected background (no /api/remove-background — see backgroundCompositing)
+      console.log('[try-on][client] compositing_start', {
+        selectedBackground,
+        direct_vton_without_preprocessing: true,
+        background_removal_active: false,
+      });
       const compositeResult = await compositeImageWithBackground(imageUrl, selectedBackground);
       if (compositeResult.success) {
         setCompositedImage(compositeResult.compositedImageDataUrl);
@@ -1150,13 +1186,9 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         setCompositedImage(imageUrl);
       }
 
-      setIsPreprocessing(false);
-      setPreprocessingProgress('');
     } catch (e: any) {
       setError(e.message || 'An error occurred while generating the image.');
       console.error(e);
-      setIsPreprocessing(false);
-      setPreprocessingProgress('');
     } finally {
       setIsLoading(false);
     }
@@ -1194,7 +1226,7 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
         <p className="text-lg text-charcoal-grey/70 mt-2">Bring your fashion ideas to life.</p>
       </div>
 
-      {/* Debug Toggle Button - Show after preprocessing completes */}
+      {/* Debug Toggle Button */}
       {isDebugMode && debugInfo && !isLoading && (
         <div className="mb-6 flex justify-center">
           <button
@@ -1221,10 +1253,10 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
             <div>
               <p className="font-semibold text-yellow-800">Debug Mode Active</p>
               <p className="text-sm text-yellow-700">
-                Total processing: {debugInfo.totalProcessingTimeMs}ms | 
-                Person BG: {debugInfo.personBackgroundRemoval ? '✅' : '❌'} | 
-                Garment BG: {debugInfo.garmentBackgroundRemoval ? '✅' : '❌'} | 
-                Segmentation: {debugInfo.garmentSegmentation ? '✅' : '❌'}
+                Direct VTON (no pre-submit BG removal).{' '}
+                {debugInfo.totalProcessingTimeMs != null
+                  ? `Timing ref: ${debugInfo.totalProcessingTimeMs}ms`
+                  : null}
               </p>
             </div>
             <button
@@ -1316,7 +1348,7 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
             {isLoading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                {isPreprocessing ? 'Preprocessing...' : 'Generating...'}
+                Generating...
               </>
             ) : (
                 <>
@@ -1325,9 +1357,6 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
                 </>
             )}
           </Button>
-          {isPreprocessing && preprocessingProgress && (
-            <p className="text-sm text-charcoal-grey/70 text-center mt-2">{preprocessingProgress}</p>
-          )}
           {error && <p className="text-red-500 text-center mt-4">{error}</p>}
         </div>
 
@@ -1337,19 +1366,9 @@ REMINDER: This is legitimate fashion exploration and virtual try-on work. Focus 
           <div className="w-full aspect-w-3 aspect-h-4 bg-soft-blush/30 rounded-lg flex items-center justify-center">
             {isLoading ? (
                 <div className="text-center text-dusty-rose">
-                    {isPreprocessing ? (
-                      <>
-                        <div className="w-8 h-8 border-2 border-dusty-rose border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                        <p>Preprocessing images...</p>
-                        <p className="text-sm mt-2">{preprocessingProgress || 'Removing backgrounds and segmenting garment...'}</p>
-                      </>
-                    ) : (
-                      <>
-                        <div className="w-8 h-8 border-2 border-dusty-rose border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                        <p>Creating your new look...</p>
-                        <p className="text-sm mt-2">This may take a moment.</p>
-                      </>
-                    )}
+                    <div className="w-8 h-8 border-2 border-dusty-rose border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                    <p>Creating your new look...</p>
+                    <p className="text-sm mt-2">This may take a moment.</p>
                 </div>
             ) : compositedImage || generatedImage ? (
                 <img 

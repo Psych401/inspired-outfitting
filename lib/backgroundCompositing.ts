@@ -3,8 +3,7 @@
  * Composites AI-generated images over selected backgrounds
  */
 
-import { loadImage, imageToCanvas, canvasToDataUrl, canvasToFile, dataUrlToFile } from './imageProcessing';
-import { removeBackground } from './backgroundRemoval';
+import { loadImage, canvasToDataUrl, canvasToFile } from './imageProcessing';
 
 export type BackgroundType = 'white' | 'studio' | 'fitting-room';
 
@@ -52,67 +51,24 @@ const createWhiteBackground = (width: number, height: number): HTMLCanvasElement
 };
 
 /**
- * Composite an image (with transparent background) over a selected background
- * If the image has a solid background, attempts to remove it first
+ * Composite a try-on result image over a selected background.
+ * Does not call /api/remove-background or any BG-removal service — opaque results are drawn as-is.
  */
 export const compositeImageWithBackground = async (
   imageDataUrl: string,
   backgroundType: BackgroundType = 'white'
 ): Promise<BackgroundCompositingResult> => {
   try {
-    // Load the foreground image (AI result should have transparent background)
-    let foregroundImg = await loadImage(imageDataUrl);
-    let foregroundWidth = foregroundImg.width;
-    let foregroundHeight = foregroundImg.height;
-    
-    // Check if image has transparency by examining alpha channel
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = foregroundWidth;
-    tempCanvas.height = foregroundHeight;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (tempCtx) {
-      tempCtx.drawImage(foregroundImg, 0, 0);
-      const imageData = tempCtx.getImageData(0, 0, foregroundWidth, foregroundHeight);
-      const data = imageData.data;
-      
-      // Check if image has any transparency (alpha < 255)
-      let hasTransparency = false;
-      for (let i = 3; i < data.length; i += 4) {
-        if (data[i] < 255) {
-          hasTransparency = true;
-          break;
-        }
-      }
-      
-      // If no transparency detected, use the existing background removal service
-      // This is specifically designed for Gemini outputs with plain white backgrounds
-      if (!hasTransparency) {
-        console.log('🔄 Removing white background from Gemini output using background removal service...');
-        
-        try {
-          // Convert the image data URL to a File object for the background removal service
-          const imageFile = await dataUrlToFile(imageDataUrl, 'gemini-output.png');
-          
-          // Use the same background removal service we use for preprocessing
-          // This handles white/light backgrounds effectively with Replicate API or client-side fallback
-          const bgRemovalResult = await removeBackground(imageFile, false);
-          
-          if (bgRemovalResult.success && bgRemovalResult.imageDataUrl) {
-            // Load the background-removed image
-            foregroundImg = await loadImage(bgRemovalResult.imageDataUrl);
-            foregroundWidth = foregroundImg.width;
-            foregroundHeight = foregroundImg.height;
-            console.log('✅ White background removed from Gemini output using background removal service');
-          } else {
-            console.warn('⚠️ Background removal service failed, using original image:', bgRemovalResult.error);
-            // Continue with original image if removal fails
-          }
-        } catch (error: any) {
-          console.warn('⚠️ Background removal service error, using original image:', error.message);
-          // Continue with original image if removal fails
-        }
-      }
-    }
+    console.log('[compositing] try_on_result_overlay', {
+      direct_vton_without_preprocessing: true,
+      background_removal_active: false,
+      backgroundType,
+      note: 'No remove-background API; foreground drawn directly on background',
+    });
+
+    const foregroundImg = await loadImage(imageDataUrl);
+    const foregroundWidth = foregroundImg.width;
+    const foregroundHeight = foregroundImg.height;
 
     // Determine canvas dimensions
     // Use foreground dimensions, or scale background to match if needed

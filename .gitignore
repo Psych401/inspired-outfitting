@@ -34,3 +34,5 @@ build
 *.njsproj
 *.sln
 *.sw?
+tryon-models/
+tryon-models/**

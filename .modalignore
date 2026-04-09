@@ -1,0 +1,4 @@
+# Keep Modal image/build context small — weights live on a Modal Volume or download at runtime.
+tryon-models/**/weights/
+tryon-models/**/.cache/
+tryon-models/**/.git/
