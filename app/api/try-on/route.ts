@@ -5,7 +5,11 @@ import { getCreditCostPerGeneration, tryDebitCredits, refundCredits } from '@/li
 import { checkRateLimit, rateLimitKey } from '@/lib/try-on/rate-limit';
 import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
-import type { GarmentCategory, GarmentPhotoType } from '@/lib/try-on/types';
+import {
+  isInvalidOnePiecePhotoType,
+  type GarmentCategory,
+  type GarmentPhotoType,
+} from '@/lib/try-on/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -67,6 +71,12 @@ export async function POST(request: NextRequest) {
     if (!GARMENT_PHOTO_TYPES.has(garmentPhotoType as GarmentPhotoType)) {
       return NextResponse.json(
         { error: 'garment_photo_type must be flat-lay or model', code: 'INVALID_GARMENT_PHOTO_TYPE' },
+        { status: 400 }
+      );
+    }
+    if (isInvalidOnePiecePhotoType(category as GarmentCategory, garmentPhotoType as GarmentPhotoType)) {
+      return NextResponse.json(
+        { error: 'One-piece garments must use a model-worn garment image.', code: 'INVALID_CATEGORY_PHOTO_TYPE_COMBINATION' },
         { status: 400 }
       );
     }

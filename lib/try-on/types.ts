@@ -4,6 +4,12 @@
 
 export type GarmentCategory = 'tops' | 'bottoms' | 'one-pieces';
 export type GarmentPhotoType = 'flat-lay' | 'model';
+export function isInvalidOnePiecePhotoType(
+  category: GarmentCategory | null,
+  garmentPhotoType: GarmentPhotoType | null
+): boolean {
+  return category === 'one-pieces' && garmentPhotoType === 'flat-lay';
+}
 
 export type TryOnJobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
 

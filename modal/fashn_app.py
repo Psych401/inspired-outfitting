@@ -71,9 +71,56 @@ DEFAULT_FASHN_NUM_TIMESTEPS = 30
 app = modal.App(APP_NAME)
 weights_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 tryon_secrets = modal.Secret.from_name(SECRET_NAME)
+# Hugging Face Hub token (set HF_TOKEN in Modal dashboard for this secret).
+HF_SECRET_NAME = "hf-secret"
+hf_secret = modal.Secret.from_name(HF_SECRET_NAME)
+# Bundle app secrets + HF token for workers that run Hub downloads / inference.
+hf_worker_secrets = [tryon_secrets, hf_secret]
 
 logger = logging.getLogger("fashn_modal")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+
+# -----------------------------------------------------------------------------
+# Hugging Face auth bootstrap (one-time at startup)
+# -----------------------------------------------------------------------------
+
+_hf_auth_initialized = False
+
+
+def init_hf_auth_once() -> None:
+    """
+    Initialize HF Hub authentication once per process at startup.
+    - Reads HF_TOKEN from env
+    - Mirrors token to HUGGINGFACE_HUB_TOKEN for downstream libraries
+    - Optionally enables hf_transfer acceleration
+    - Never logs or exposes token value
+    """
+    global _hf_auth_initialized
+    if _hf_auth_initialized:
+        return
+    _hf_auth_initialized = True
+
+    # Optional transfer acceleration (safe no-op when unsupported)
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+    hf_token = (os.environ.get("HF_TOKEN") or "").strip()
+    if not hf_token:
+        logger.info("hf_auth: no HF_TOKEN found; continuing unauthenticated")
+        return
+
+    os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+    try:
+        from huggingface_hub import login
+
+        # in-process login so all huggingface_hub calls are authenticated
+        login(token=hf_token)
+        logger.info("hf_auth: authenticated Hugging Face Hub client")
+    except Exception as e:
+        # Do not crash startup; fall back to env-token behavior where possible
+        logger.warning("hf_auth: login() failed, continuing with env token only (%s)", e)
+
+
+init_hf_auth_once()
 
 # -----------------------------------------------------------------------------
 # Images
@@ -132,7 +179,12 @@ web_image = (
 
 
 def _hf_token() -> str | None:
-    t = (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    t = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or ""
+    ).strip()
     if not t or t.lower() in ("none", "optional", "public"):
         return None
     return t
@@ -362,7 +414,7 @@ def preflight_webhook_reachable(webhook_url: str) -> None:
 
 @app.function(
     image=web_image,
-    secrets=[tryon_secrets],
+    secrets=hf_worker_secrets,
     timeout=30,
     max_containers=1,
     single_use_containers=True,
@@ -465,7 +517,7 @@ def validate_try_on_payload(d: dict[str, Any]) -> dict[str, Any]:
 @app.function(
     image=fashn_image,
     volumes={"/weights": weights_volume},
-    secrets=[tryon_secrets],
+    secrets=hf_worker_secrets,
     timeout=3600,
     cpu=4.0,
     memory=8192,
@@ -495,7 +547,7 @@ GPU_CLASS_TIMEOUT_SEC = 180  # 3 minutes max; normal try-on should finish well u
     image=fashn_image,
     gpu="A10G",
     volumes={"/weights": weights_volume},
-    secrets=[tryon_secrets],
+    secrets=hf_worker_secrets,
     timeout=GPU_CLASS_TIMEOUT_SEC,
     min_containers=COST_MIN_CONTAINERS,
     buffer_containers=COST_BUFFER_CONTAINERS,
@@ -640,7 +692,7 @@ def _check_ingress_auth(authorization: str | None) -> None:
 
 @app.function(
     image=web_image,
-    secrets=[tryon_secrets],
+    secrets=hf_worker_secrets,
     timeout=120,
     min_containers=COST_MIN_CONTAINERS,
     buffer_containers=COST_BUFFER_CONTAINERS,

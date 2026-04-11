@@ -9,7 +9,11 @@ import PreviousOutfits from '@/components/PreviousOutfits';
 import type { PreprocessingDebugInfo } from '@/lib/preprocessingPipeline';
 import { DebugPanel } from '@/components/DebugPanel';
 import Link from 'next/link';
-import type { GarmentCategory, GarmentPhotoType } from '@/lib/try-on/types';
+import {
+  isInvalidOnePiecePhotoType,
+  type GarmentCategory,
+  type GarmentPhotoType,
+} from '@/lib/try-on/types';
 
 const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -271,7 +275,15 @@ export default function DressYourselfPage() {
     setError(null);
   };
 
-  const canSubmit = Boolean(personImage && outfitImage && garmentCategory && garmentPhotoType && !isLoading);
+  const hasInvalidOnePiecePhotoType = isInvalidOnePiecePhotoType(garmentCategory, garmentPhotoType);
+  const canSubmit = Boolean(
+    personImage &&
+      outfitImage &&
+      garmentCategory &&
+      garmentPhotoType &&
+      !hasInvalidOnePiecePhotoType &&
+      !isLoading
+  );
   
   const handleGenerate = useCallback(async () => {
     setSubmitAttempted(true);
@@ -288,6 +300,11 @@ export default function DressYourselfPage() {
     if (!garmentPhotoType) {
         setError('Please select a garment photo type.');
         return;
+    }
+
+    if (hasInvalidOnePiecePhotoType) {
+      setError('One-piece garments must use a model-worn garment image.');
+      return;
     }
 
     if (!isAuthenticated || user?.subscription === 'Free') {
@@ -420,7 +437,7 @@ export default function DressYourselfPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [personImage, outfitImage, garmentCategory, garmentPhotoType, isAuthenticated, user, router, isDebugMode]);
+  }, [personImage, outfitImage, garmentCategory, garmentPhotoType, hasInvalidOnePiecePhotoType, isAuthenticated, user, router, isDebugMode]);
 
   const handleSaveToHistory = useCallback(() => {
     if (generatedImage && personImageBase64 && outfitImageBase64 && !isSaved) {
@@ -563,6 +580,12 @@ export default function DressYourselfPage() {
             <p className="text-sm text-charcoal-grey/70 -mt-4">
               Photo type guide: <span className="font-medium">Flat-lay</span> = product-only garment image, <span className="font-medium">Model-worn</span> = garment shown on a person.
             </p>
+          )}
+          {hasInvalidOnePiecePhotoType && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              One-piece outfits (e.g. dresses) require a model-worn garment image for best results.
+              Please upload a garment shown on a person.
+            </div>
           )}
 
           <div className="rounded-lg border border-dusty-rose/30 bg-soft-blush/30 px-4 py-3 text-sm">
