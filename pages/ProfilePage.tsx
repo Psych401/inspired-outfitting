@@ -12,7 +12,8 @@ const RegenerateIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="
 interface ProfilePageProps extends NavigationProps {}
 
 const ProfilePage: React.FC<ProfilePageProps> = ({ navigate }) => {
-  const { user, history, logout, deleteHistoryItem, setRegenerate, uploadedPersonImages, uploadedOutfitImages } = useAuth();
+  const { user, billing, history, logout, deleteHistoryItem, setRegenerate, uploadedPersonImages, uploadedOutfitImages } =
+    useAuth();
 
   if (!user) {
     return (
@@ -46,7 +47,13 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ navigate }) => {
           <h2 className="text-2xl font-heading font-semibold mb-4">My Subscription</h2>
           <div className="bg-soft-blush/50 p-4 rounded-md text-center mb-4">
             <p className="text-sm">Current Plan</p>
-            <p className="text-2xl font-bold text-dusty-rose">{user.subscription}</p>
+            <p className="text-2xl font-bold text-dusty-rose">
+              {billing.loading
+                ? '…'
+                : billing.subscriptionTier === 'none'
+                  ? 'Free · not subscribed'
+                  : `${billing.subscriptionTier} · ${billing.subscriptionStatus}`}
+            </p>
           </div>
           <Button onClick={() => navigate('pricing')} variant="secondary" className="w-full text-base py-2">
             Change Plan

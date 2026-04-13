@@ -45,8 +45,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ navigate }) => {
 
     const user = {
       email: target.email.value,
-      name: isLogin ? 'Isaac Cronin' : target.name.value,
-      subscription: 'Standard' as const, // Default to standard on login/signup for demo
+      name: isLogin ? target.email.value.split('@')[0] || 'Member' : target.name.value,
     };
     login(user);
     navigate('profile');

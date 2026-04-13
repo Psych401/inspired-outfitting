@@ -1,31 +1,29 @@
-/**
- * In-memory credit ledger for audits. Replace with DB in production.
- */
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
-export type LedgerKind = 'grant' | 'debit' | 'restore';
+export type LedgerKind = 'grant' | 'debit' | 'refund' | 'adjustment';
 
-export interface LedgerEntry {
-  id: string;
+export async function appendLedger(params: {
   userId: string;
   kind: LedgerKind;
   amount: number;
   reason: string;
-  at: number;
-  ref?: string;
-}
-
-const entries: LedgerEntry[] = [];
-const MAX = 20_000;
-
-let seq = 0;
-
-export function appendLedger(e: Omit<LedgerEntry, 'id' | 'at'> & { at?: number }): LedgerEntry {
-  const row: LedgerEntry = {
-    ...e,
-    id: `led_${++seq}`,
-    at: e.at ?? Date.now(),
-  };
-  entries.push(row);
-  if (entries.length > MAX) entries.splice(0, entries.length - MAX);
-  return row;
+  jobId?: string;
+  stripeEventId?: string;
+  sourceKey?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  const supabase = getSupabaseServiceRoleClient();
+  const { error } = await supabase.from('credit_ledger').insert({
+    user_id: params.userId,
+    entry_type: params.kind,
+    credits_delta: params.amount,
+    reason: params.reason,
+    job_id: params.jobId ?? null,
+    stripe_event_id: params.stripeEventId ?? null,
+    source_key: params.sourceKey ?? null,
+    metadata: params.metadata ?? {},
+  });
+  if (error) {
+    throw new Error(`credit_ledger insert failed: ${error.message}`);
+  }
 }

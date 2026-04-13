@@ -93,12 +93,12 @@ export const imageToCanvas = (img: HTMLImageElement): HTMLCanvasElement => {
   return canvas;
 };
 
-/** Max dimension (px) to send to Gemini for more consistent results (API scales to 3072 but smaller is more reliable) */
+/** Max dimension (px) for model input consistency. */
 const GEMINI_RECOMMENDED_MAX_DIMENSION = 1024;
 
 /**
  * Resize an image to fit within maxDimension on the longest side (aspect ratio preserved).
- * Returns a new canvas. Use before sending images to Gemini for more consistent behavior.
+ * Returns a new canvas. Use before sending images to the active try-on provider.
  */
 export const resizeImageToMaxDimension = (img: HTMLImageElement, maxDimension: number = GEMINI_RECOMMENDED_MAX_DIMENSION): HTMLCanvasElement => {
   const w = img.naturalWidth || img.width;

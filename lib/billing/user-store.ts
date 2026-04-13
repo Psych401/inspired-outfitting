@@ -1,9 +1,6 @@
-/**
- * In-memory billing state per user (userId = normalized email).
- * Replace with Postgres/Redis for multi-instance production.
- */
-
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 import type { SubscriptionPlanKey } from './products';
+import { normalizeSubscriptionPlanKey } from './plan-keys';
 
 export type SubscriptionStatus = 'none' | 'active' | 'past_due' | 'canceled' | 'trialing' | 'unpaid';
 
@@ -12,71 +9,134 @@ export interface UserBillingRecord {
   stripeCustomerId?: string;
   subscriptionTier: SubscriptionPlanKey | 'none';
   subscriptionStatus: SubscriptionStatus;
-  /** Stripe subscription id when active */
   stripeSubscriptionId?: string;
   credits: number;
   updatedAt: number;
 }
 
-const users = new Map<string, UserBillingRecord>();
-
+/** New accounts: exactly 3 free credits unless TRY_ON_DEFAULT_USER_CREDITS overrides (non-negative). */
 function defaultCredits(): number {
-  const n = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 0);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  const n = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3;
+}
+
+function mapTierFromDb(raw: string | null | undefined): SubscriptionPlanKey | 'none' {
+  if (raw == null || raw === 'none') return 'none';
+  return normalizeSubscriptionPlanKey(raw) ?? 'none';
 }
 
 export function normalizeUserId(userId: string): string {
   return userId.trim().toLowerCase();
 }
 
-export function getOrCreateUser(userId: string): UserBillingRecord {
+async function ensureUserProfile(userId: string): Promise<void> {
+  const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
-  let u = users.get(id);
-  if (!u) {
-    u = {
-      userId: id,
-      subscriptionTier: 'none',
-      subscriptionStatus: 'none',
-      credits: defaultCredits(),
-      updatedAt: Date.now(),
+  const { error } = await supabase.from('app_users').upsert(
+    {
+      id,
+      email: id,
+    },
+    { onConflict: 'id' }
+  );
+  if (error) throw new Error(`app_users upsert failed: ${error.message}`);
+}
+
+export async function getOrCreateUser(userId: string): Promise<UserBillingRecord> {
+  await ensureUserProfile(userId);
+  const supabase = getSupabaseServiceRoleClient();
+  const id = normalizeUserId(userId);
+
+  const { data: row, error } = await supabase
+    .from('user_billing_state')
+    .select('*')
+    .eq('user_id', id)
+    .maybeSingle();
+  if (error) throw new Error(`user_billing_state read failed: ${error.message}`);
+
+  if (!row) {
+    const { data: inserted, error: insertError } = await supabase
+      .from('user_billing_state')
+      .insert({
+        user_id: id,
+        credit_balance: defaultCredits(),
+        subscription_tier: 'none',
+        subscription_status: 'none',
+      })
+      .select('*')
+      .single();
+    if (insertError) throw new Error(`user_billing_state insert failed: ${insertError.message}`);
+    return {
+      userId: inserted.user_id,
+      stripeCustomerId: inserted.stripe_customer_id ?? undefined,
+      subscriptionTier: mapTierFromDb(inserted.subscription_tier),
+      subscriptionStatus: inserted.subscription_status,
+      stripeSubscriptionId: inserted.stripe_subscription_id ?? undefined,
+      credits: inserted.credit_balance,
+      updatedAt: Date.parse(inserted.updated_at),
     };
-    users.set(id, u);
   }
-  return u;
-}
 
-export function getUser(userId: string): UserBillingRecord | undefined {
-  return users.get(normalizeUserId(userId));
-}
-
-export function patchUser(userId: string, patch: Partial<UserBillingRecord>): UserBillingRecord {
-  const cur = getOrCreateUser(userId);
-  const next: UserBillingRecord = {
-    ...cur,
-    ...patch,
-    userId: cur.userId,
-    updatedAt: Date.now(),
+  return {
+    userId: row.user_id,
+    stripeCustomerId: row.stripe_customer_id ?? undefined,
+    subscriptionTier: mapTierFromDb(row.subscription_tier),
+    subscriptionStatus: row.subscription_status,
+    stripeSubscriptionId: row.stripe_subscription_id ?? undefined,
+    credits: row.credit_balance,
+    updatedAt: Date.parse(row.updated_at),
   };
-  users.set(cur.userId, next);
-  return next;
 }
 
-export function setStripeCustomer(userId: string, stripeCustomerId: string): void {
-  patchUser(userId, { stripeCustomerId });
+export async function getUser(userId: string): Promise<UserBillingRecord | undefined> {
+  const supabase = getSupabaseServiceRoleClient();
+  const id = normalizeUserId(userId);
+  const { data: row, error } = await supabase
+    .from('user_billing_state')
+    .select('*')
+    .eq('user_id', id)
+    .maybeSingle();
+  if (error) throw new Error(`user_billing_state read failed: ${error.message}`);
+  if (!row) return undefined;
+  return {
+    userId: row.user_id,
+    stripeCustomerId: row.stripe_customer_id ?? undefined,
+    subscriptionTier: mapTierFromDb(row.subscription_tier),
+    subscriptionStatus: row.subscription_status,
+    stripeSubscriptionId: row.stripe_subscription_id ?? undefined,
+    credits: row.credit_balance,
+    updatedAt: Date.parse(row.updated_at),
+  };
 }
 
-export function addCredits(userId: string, amount: number, _reason: string): number {
-  if (amount <= 0) return getOrCreateUser(userId).credits;
-  const u = getOrCreateUser(userId);
-  const next = u.credits + amount;
-  patchUser(userId, { credits: next });
-  return next;
+export async function patchUser(userId: string, patch: Partial<UserBillingRecord>): Promise<UserBillingRecord> {
+  const cur = await getOrCreateUser(userId);
+  const supabase = getSupabaseServiceRoleClient();
+  const id = normalizeUserId(userId);
+  const { data, error } = await supabase
+    .from('user_billing_state')
+    .update({
+      credit_balance: patch.credits ?? cur.credits,
+      subscription_tier: patch.subscriptionTier ?? cur.subscriptionTier,
+      subscription_status: patch.subscriptionStatus ?? cur.subscriptionStatus,
+      stripe_customer_id: patch.stripeCustomerId ?? cur.stripeCustomerId ?? null,
+      stripe_subscription_id: patch.stripeSubscriptionId ?? cur.stripeSubscriptionId ?? null,
+    })
+    .eq('user_id', id)
+    .select('*')
+    .single();
+  if (error) throw new Error(`user_billing_state patch failed: ${error.message}`);
+  return {
+    userId: data.user_id,
+    stripeCustomerId: data.stripe_customer_id ?? undefined,
+    subscriptionTier: mapTierFromDb(data.subscription_tier),
+    subscriptionStatus: data.subscription_status,
+    stripeSubscriptionId: data.stripe_subscription_id ?? undefined,
+    credits: data.credit_balance,
+    updatedAt: Date.parse(data.updated_at),
+  };
 }
 
-export function deductCredits(userId: string, amount: number): { ok: boolean; remaining: number } {
-  const u = getOrCreateUser(userId);
-  if (u.credits < amount) return { ok: false, remaining: u.credits };
-  const remaining = u.credits - amount;
-  patchUser(userId, { credits: remaining });
-  return { ok: true, remaining };
+export async function setStripeCustomer(userId: string, stripeCustomerId: string): Promise<void> {
+  await patchUser(userId, { stripeCustomerId });
 }

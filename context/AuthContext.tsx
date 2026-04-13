@@ -1,18 +1,74 @@
 'use client';
 
-import React, { createContext, useState, useCallback, ReactNode } from 'react';
-import { AuthContextType, User, TryOnHistoryItem } from '../types';
+import React, { createContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { AuthContextType, User, TryOnHistoryItem, BillingSnapshot, BillingTier, BillingSubscriptionStatus } from '../types';
+import { normalizeSubscriptionPlanKey } from '@/lib/billing/plan-keys';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const emptyBilling = (): BillingSnapshot => ({
+  credits: null,
+  subscriptionTier: 'none',
+  subscriptionStatus: 'none',
+  loading: false,
+});
+
+function parseBillingPayload(data: Record<string, unknown>): BillingSnapshot {
+  const tierRaw = typeof data.subscriptionTier === 'string' ? data.subscriptionTier : 'none';
+  const statusRaw = typeof data.subscriptionStatus === 'string' ? data.subscriptionStatus : 'none';
+  const subscriptionTier: BillingTier =
+    tierRaw === 'none'
+      ? 'none'
+      : (normalizeSubscriptionPlanKey(tierRaw) as BillingTier | null) ?? 'none';
+  const statuses: BillingSubscriptionStatus[] = [
+    'none',
+    'active',
+    'past_due',
+    'canceled',
+    'trialing',
+    'unpaid',
+  ];
+  return {
+    credits: typeof data.credits === 'number' && Number.isFinite(data.credits) ? data.credits : null,
+    subscriptionTier,
+    subscriptionStatus: (statuses.includes(statusRaw as BillingSubscriptionStatus)
+      ? statusRaw
+      : 'none') as BillingSubscriptionStatus,
+    loading: false,
+  };
+}
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [billing, setBilling] = useState<BillingSnapshot>(emptyBilling);
   const [history, setHistory] = useState<TryOnHistoryItem[]>([]);
   const [uploadedPersonImages, setUploadedPersonImages] = useState<string[]>([]);
   const [uploadedOutfitImages, setUploadedOutfitImages] = useState<string[]>([]);
   const [favoriteOutfitImages, setFavoriteOutfitImages] = useState<string[]>([]);
-  const [imagesToRegenerate, setImagesToRegenerate] = useState<{personImg: string, outfitImg: string} | null>(null);
+  const [imagesToRegenerate, setImagesToRegenerate] = useState<{ personImg: string; outfitImg: string } | null>(null);
 
+  const refreshBilling = useCallback(async () => {
+    if (!user) {
+      setBilling(emptyBilling());
+      return;
+    }
+    setBilling((b) => ({ ...b, loading: true }));
+    try {
+      const res = await fetch('/api/billing/me', { credentials: 'include', cache: 'no-store' });
+      if (!res.ok) {
+        setBilling(emptyBilling());
+        return;
+      }
+      const data = (await res.json()) as Record<string, unknown>;
+      setBilling(parseBillingPayload(data));
+    } catch {
+      setBilling(emptyBilling());
+    }
+  }, [user]);
+
+  useEffect(() => {
+    void refreshBilling();
+  }, [refreshBilling]);
 
   const login = useCallback((userData: User) => {
     setUser(userData);
@@ -21,6 +77,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const logout = useCallback(() => {
     void fetch('/api/auth/session', { method: 'DELETE', credentials: 'include' });
     setUser(null);
+    setBilling(emptyBilling());
     setHistory([]);
     setUploadedPersonImages([]);
     setUploadedOutfitImages([]);
@@ -34,14 +91,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       id: new Date().toISOString() + Math.random(),
       createdAt: new Date(),
     };
-    setHistory(prevHistory => [newItem, ...prevHistory]);
+    setHistory((prevHistory) => [newItem, ...prevHistory]);
 
-    // Add unique person image. Outfit images are handled separately on upload.
-    setUploadedPersonImages(prev => [...new Set([item.personImg, ...prev])]);
+    setUploadedPersonImages((prev) => [...new Set([item.personImg, ...prev])]);
   }, []);
 
   const deleteHistoryItem = useCallback((id: string) => {
-    setHistory(prev => prev.filter(item => item.id !== id));
+    setHistory((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
   const setRegenerate = useCallback((personImg: string, outfitImg: string) => {
@@ -53,31 +109,31 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, []);
 
   const addUploadedOutfitImage = useCallback((imageBase64: string) => {
-    setUploadedOutfitImages(prev => {
-      // Remove if it exists to add it to the front (as most recently used)
-      const filtered = prev.filter(img => img !== imageBase64);
+    setUploadedOutfitImages((prev) => {
+      const filtered = prev.filter((img) => img !== imageBase64);
       return [imageBase64, ...filtered];
     });
   }, []);
 
   const deleteUploadedOutfitImage = useCallback((imageBase64: string) => {
-    setUploadedOutfitImages(prev => prev.filter(img => img !== imageBase64));
-    setFavoriteOutfitImages(prev => prev.filter(img => img !== imageBase64));
+    setUploadedOutfitImages((prev) => prev.filter((img) => img !== imageBase64));
+    setFavoriteOutfitImages((prev) => prev.filter((img) => img !== imageBase64));
   }, []);
 
   const toggleFavoriteOutfit = useCallback((imageBase64: string) => {
-    setFavoriteOutfitImages(prev => {
+    setFavoriteOutfitImages((prev) => {
       if (prev.includes(imageBase64)) {
-        return prev.filter(img => img !== imageBase64);
-      } else {
-        return [...prev, imageBase64];
+        return prev.filter((img) => img !== imageBase64);
       }
+      return [...prev, imageBase64];
     });
   }, []);
 
   const value = {
     isAuthenticated: !!user,
     user,
+    billing,
+    refreshBilling,
     history,
     uploadedPersonImages,
     uploadedOutfitImages,

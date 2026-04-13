@@ -18,17 +18,9 @@ export interface PreprocessingDebugInfo {
   personImageAfterBackgroundRemoval?: string;
   garmentImageAfterBackgroundRemoval?: string;
   garmentImageAfterSegmentation?: string;
-  // Final processed versions (what gets sent to Gemini)
+  // Final processed versions for downstream model request
   finalPersonImageDataUrl?: string;
   finalGarmentImageDataUrl?: string;
-  // Gemini API images
-  imagesSentToGemini?: {
-    personImageDataUrl: string;
-    garmentImageDataUrl: string;
-    personImageBase64Preview?: string; // First 100 chars for verification
-    garmentImageBase64Preview?: string; // First 100 chars for verification
-  };
-  imageReceivedFromGemini?: string;
 }
 
 export interface PreprocessingResult {

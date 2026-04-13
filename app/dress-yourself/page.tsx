@@ -6,8 +6,6 @@ import Button from '@/components/Button';
 import { UploadIcon, SparklesIcon, DownloadIcon } from '@/components/IconComponents';
 import { useRouter } from 'next/navigation';
 import PreviousOutfits from '@/components/PreviousOutfits';
-import type { PreprocessingDebugInfo } from '@/lib/preprocessingPipeline';
-import { DebugPanel } from '@/components/DebugPanel';
 import Link from 'next/link';
 import {
   isInvalidOnePiecePhotoType,
@@ -181,17 +179,18 @@ const GarmentPhotoTypeSelector: React.FC<{
 
 export default function DressYourselfPage() {
   const router = useRouter();
-  const { 
-    isAuthenticated, 
-    user, 
-    addHistoryItem, 
-    imagesToRegenerate, 
-    clearRegenerate, 
+  const {
+    isAuthenticated,
+    user,
+    refreshBilling,
+    addHistoryItem,
+    imagesToRegenerate,
+    clearRegenerate,
     uploadedOutfitImages,
     addUploadedOutfitImage,
     deleteUploadedOutfitImage,
     favoriteOutfitImages,
-    toggleFavoriteOutfit
+    toggleFavoriteOutfit,
   } = useAuth();
   const [personImage, setPersonImage] = useState<File | null>(null);
   const [outfitImage, setOutfitImage] = useState<File | null>(null);
@@ -202,29 +201,20 @@ export default function DressYourselfPage() {
   const [garmentCategory, setGarmentCategory] = useState<GarmentCategory | null>(null);
   const [garmentPhotoType, setGarmentPhotoType] = useState<GarmentPhotoType | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  type GenPhase = 'idle' | 'submitting' | 'generating';
+  const [genPhase, setGenPhase] = useState<GenPhase>('idle');
+  const isBusy = genPhase !== 'idle';
   const [error, setError] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<PreprocessingDebugInfo | null>(null);
-  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
-  
-  // Check if debug mode is enabled
-  const isDebugMode = typeof window !== 'undefined' 
-    ? (process.env.NEXT_PUBLIC_DEBUG_PREPROCESSING === 'true' || 
-       localStorage.getItem('debug_preprocessing') === 'true')
-    : process.env.NEXT_PUBLIC_DEBUG_PREPROCESSING === 'true';
 
-  // Log debug mode status
   useEffect(() => {
-    if (isDebugMode) {
-      console.log('🔍 Debug mode is ENABLED');
-      console.log('Environment variable:', process.env.NEXT_PUBLIC_DEBUG_PREPROCESSING);
-    } else {
-      console.log('Debug mode is DISABLED');
-      console.log('Environment variable:', process.env.NEXT_PUBLIC_DEBUG_PREPROCESSING);
+    if (typeof window === 'undefined') return;
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('checkout') === 'success') {
+      void refreshBilling();
     }
-  }, [isDebugMode]);
+  }, [refreshBilling]);
 
   useEffect(() => {
     const initFromRegenerate = async () => {
@@ -282,7 +272,7 @@ export default function DressYourselfPage() {
       garmentCategory &&
       garmentPhotoType &&
       !hasInvalidOnePiecePhotoType &&
-      !isLoading
+      !isBusy
   );
   
   const handleGenerate = useCallback(async () => {
@@ -313,7 +303,7 @@ export default function DressYourselfPage() {
       return;
     }
 
-    setIsLoading(true);
+    setGenPhase('submitting');
     setError(null);
     setGeneratedImage(null);
     setIsSaved(false);
@@ -372,6 +362,8 @@ export default function DressYourselfPage() {
       }
       console.log('[try-on][client] queued', { requestId, jobId });
 
+      setGenPhase('generating');
+
       const pollEveryMs = 1500;
       const timeoutMs = 240000;
       const pollStarted = Date.now();
@@ -413,29 +405,27 @@ export default function DressYourselfPage() {
         throw new Error('Try-on timed out before completion. Check /api/try-on logs for details.');
       }
 
-      if (isDebugMode) {
-        console.log('[try-on][client] completed', { requestId, jobId, imageLength: imageUrl.length });
-      }
-
       // Set the generated image
       setGeneratedImage(imageUrl);
       console.log('✅ Image extracted successfully, length:', imageUrl.length);
-
-      if (isDebugMode) {
-        setDebugInfo((prevDebugInfo) => {
-          const base = prevDebugInfo ?? { totalProcessingTimeMs: 0 };
-          return { ...base, imageReceivedFromGemini: imageUrl };
-        });
-        console.log('📸 Stored try-on result in debug info');
-      }
-      
     } catch (e: any) {
       setError(e.message || 'An error occurred while generating the image.');
       console.error(e);
     } finally {
-      setIsLoading(false);
+      setGenPhase('idle');
+      void refreshBilling();
     }
-  }, [personImage, outfitImage, garmentCategory, garmentPhotoType, hasInvalidOnePiecePhotoType, isAuthenticated, user, router, isDebugMode]);
+  }, [
+    personImage,
+    outfitImage,
+    garmentCategory,
+    garmentPhotoType,
+    hasInvalidOnePiecePhotoType,
+    isAuthenticated,
+    user,
+    router,
+    refreshBilling,
+  ]);
 
   const handleSaveToHistory = useCallback(() => {
     if (generatedImage && personImageBase64 && outfitImageBase64 && !isSaved) {
@@ -466,50 +456,6 @@ export default function DressYourselfPage() {
         <h1 className="text-4xl md:text-5xl font-heading font-bold">Dress Yourself</h1>
         <p className="text-lg text-charcoal-grey/70 mt-2">Bring your fashion ideas to life.</p>
       </div>
-
-      {/* Debug Toggle Button */}
-      {isDebugMode && debugInfo && !isLoading && (
-        <div className="mb-6 flex justify-center">
-          <button
-            onClick={() => {
-              console.log('🔍 Opening debug panel');
-              setIsDebugPanelOpen(true);
-            }}
-            className="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors text-sm font-semibold shadow-lg flex items-center gap-2"
-          >
-            🔍 View Debug Info
-            {debugInfo.totalProcessingTimeMs && (
-              <span className="text-xs opacity-90">
-                ({debugInfo.totalProcessingTimeMs}ms)
-              </span>
-            )}
-          </button>
-        </div>
-      )}
-
-      {/* Debug Info Fallback - Always visible when debug mode is on */}
-      {isDebugMode && debugInfo && !isDebugPanelOpen && (
-        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="font-semibold text-yellow-800">Debug Mode Active</p>
-              <p className="text-sm text-yellow-700">
-                Direct VTON (no pre-submit BG removal).{' '}
-                {debugInfo.totalProcessingTimeMs != null
-                  ? `Timing ref: ${debugInfo.totalProcessingTimeMs}ms`
-                  : null}
-              </p>
-            </div>
-            <button
-              onClick={() => setIsDebugPanelOpen(true)}
-              className="px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded text-sm font-semibold"
-            >
-              Open Full Debug Panel
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="grid lg:grid-cols-2 gap-12 items-start">
         {/* Input Section */}
         <div className="space-y-8 bg-white p-8 rounded-lg shadow-lg">
@@ -592,7 +538,7 @@ export default function DressYourselfPage() {
             <p className={outfitImage ? 'text-green-700' : 'text-charcoal-grey/80'}>{outfitImage ? '✓' : '•'} Garment image uploaded</p>
             <p className={garmentCategory ? 'text-green-700' : 'text-charcoal-grey/80'}>{garmentCategory ? '✓' : '•'} Garment category selected</p>
             <p className={garmentPhotoType ? 'text-green-700' : 'text-charcoal-grey/80'}>{garmentPhotoType ? '✓' : '•'} Garment photo type selected</p>
-            {submitAttempted && !canSubmit && !isLoading && (
+            {submitAttempted && !canSubmit && !isBusy && (
               <p className="mt-2 text-red-600">Please complete all required fields to submit your try-on.</p>
             )}
           </div>
@@ -602,16 +548,21 @@ export default function DressYourselfPage() {
             disabled={!canSubmit}
             className="w-full flex items-center justify-center gap-2"
           >
-            {isLoading ? (
+            {genPhase === 'submitting' ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                 Submitting...
               </>
+            ) : genPhase === 'generating' ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                Generating...
+              </>
             ) : (
-                <>
+              <>
                 <SparklesIcon />
-                Generate My Look
-                </>
+                Generate
+              </>
             )}
           </Button>
           {error && <p className="text-red-500 text-center mt-4">{error}</p>}
@@ -621,7 +572,7 @@ export default function DressYourselfPage() {
         <div className="bg-white p-8 rounded-lg shadow-lg h-full flex flex-col items-center justify-center min-h-[500px]">
           <h2 className="text-3xl font-heading font-semibold mb-4 text-center">Your AI Preview</h2>
           <div className="w-full aspect-w-3 aspect-h-4 bg-soft-blush/30 rounded-lg flex items-center justify-center">
-            {isLoading ? (
+            {isBusy ? (
                 <div className="text-center text-dusty-rose">
                     <div className="w-8 h-8 border-2 border-dusty-rose border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
                     <p>Creating your new look...</p>
@@ -647,7 +598,7 @@ export default function DressYourselfPage() {
                     <DownloadIcon className="w-4 h-4" />
                     Download
                 </Button>
-                <Button onClick={handleGenerate} disabled={isLoading} className="text-sm md:text-base py-2 px-2">
+                <Button onClick={handleGenerate} disabled={isBusy} className="text-sm md:text-base py-2 px-2">
                     Retry
                 </Button>
               </div>
@@ -665,16 +616,6 @@ export default function DressYourselfPage() {
           </Button>
         </div>
       )}
-
-      {/* Debug Panel */}
-      {isDebugMode && debugInfo && (
-        <DebugPanel
-          debugInfo={debugInfo}
-          isOpen={isDebugPanelOpen}
-          onClose={() => setIsDebugPanelOpen(false)}
-        />
-      )}
     </div>
   );
 }
-

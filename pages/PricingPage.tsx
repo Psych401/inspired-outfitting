@@ -4,6 +4,9 @@ import Button from '../components/Button';
 import { CheckIcon, SparklesIcon } from '../components/IconComponents';
 import { NavigationProps } from '../types';
 import { useAuth } from '../hooks/useAuth';
+import { canPurchaseCreditPacks } from '../lib/billing/subscription';
+import type { SubscriptionPlanKey } from '../lib/billing/products';
+import type { SubscriptionStatus } from '../lib/billing/user-store';
 
 interface PricingPageProps extends NavigationProps {}
 
@@ -81,8 +84,10 @@ const AddOnCard: React.FC<{
 };
 
 const PricingPage: React.FC<PricingPageProps> = ({ navigate }) => {
-  const { user } = useAuth();
-  const isSubscriber = user && user.subscription !== 'Free';
+  const { user, billing } = useAuth();
+  const tier: SubscriptionPlanKey | 'none' = billing.subscriptionTier === 'none' ? 'none' : billing.subscriptionTier;
+  const isSubscriber =
+    !!user && canPurchaseCreditPacks(billing.subscriptionStatus as SubscriptionStatus, tier);
 
   const handleSubscribe = () => {
     // In a real app, this would lead to a stripe checkout

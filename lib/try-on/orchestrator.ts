@@ -8,6 +8,8 @@ import { createGpuProvider } from './providers/factory';
 import { logJobEvent, recordMetrics } from './logger';
 import { getCreditCostPerGeneration, refundCredits } from './credits';
 import { auditLog } from '@/lib/billing/audit';
+import { saveUserImage } from '@/lib/db/images-repo';
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
 function getPublicBaseUrl(): string {
   const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL;
@@ -62,12 +64,22 @@ export async function runTryOnJob(
 
     if (result.mode === 'sync' && result.resultBase64) {
       const gpuMs = Date.now() - started;
+      if (!job.userId) throw new Error('Missing userId on sync job');
+      const generatedImage = await saveUserImage({
+        userId: job.userId,
+        imageType: 'generated',
+        buffer: Buffer.from(result.resultBase64, 'base64'),
+        mimeType: result.resultMimeType ?? 'image/jpeg',
+        jobId: job.id,
+        sourcePersonImageId: job.sourcePersonImageId,
+        sourceGarmentImageId: job.sourceGarmentImageId,
+      });
       await store.update(job.id, {
         status: 'succeeded',
-        resultBase64: result.resultBase64,
-        resultMimeType: result.resultMimeType ?? 'image/jpeg',
+        generatedImageId: generatedImage.id,
         gpuDurationMs: gpuMs,
         providerJobId: result.providerJobId,
+        completedAt: Date.now(),
       });
       const updated = await store.get(job.id);
       if (updated) {
@@ -98,14 +110,31 @@ export async function runTryOnJob(
       job.creditCostDebited > 0 &&
       !job.creditRefundIssued
     ) {
-      refundCredits(job.userId, cost);
-      auditLog('credits_restored', {
-        userId: job.userId,
-        amount: cost,
-        reason: 'gpu_submit_failed',
-        jobId: job.id,
+      const supabase = getSupabaseServiceRoleClient();
+      const { data, error } = await supabase.rpc('app_refund_job_credit_once', {
+        p_job_id: job.id,
+        p_reason: 'gpu_submit_failed',
+        p_source_key: `refund:${job.id}:gpu_submit_failed`,
       });
-      refundIssued = true;
+      if (!error) {
+        const row = Array.isArray(data) ? data[0] : data;
+        refundIssued = Boolean(row?.refunded);
+        if (refundIssued) {
+          auditLog('credits_restored', {
+            userId: job.userId,
+            amount: cost,
+            reason: 'gpu_submit_failed',
+            jobId: job.id,
+          });
+        }
+      } else {
+        await refundCredits(job.userId, cost, {
+          reason: 'gpu_submit_failed',
+          sourceKey: `refund-fallback:${job.id}:${Date.now()}`,
+          jobId: job.id,
+        });
+        refundIssued = true;
+      }
     }
     await store.update(job.id, {
       status: 'failed',

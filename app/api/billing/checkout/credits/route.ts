@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth/require-user';
 import { getStripe } from '@/lib/billing/stripe-client';
 import { assertCreditPackKey, getCreditPackStripePriceId } from '@/lib/billing/products';
-import { getUser, setStripeCustomer } from '@/lib/billing/user-store';
+import { getOrCreateUser, setStripeCustomer } from '@/lib/billing/user-store';
+import { canPurchaseCreditPacks } from '@/lib/billing/subscription';
 import { checkBillingCheckoutLimit } from '@/lib/billing/rate-limit';
 import { auditLog } from '@/lib/billing/audit';
 
@@ -51,6 +52,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unknown or invalid pack key', code: 'INVALID_PACK_KEY' }, { status: 400 });
   }
 
+  const billing = await getOrCreateUser(auth.sub);
+  if (!canPurchaseCreditPacks(billing.subscriptionStatus, billing.subscriptionTier)) {
+    return NextResponse.json(
+      {
+        error: 'Credit packs are for subscribers only. Subscribe to a plan first, then you can top up credits.',
+        code: 'PACKS_SUBSCRIBER_ONLY',
+      },
+      { status: 403 }
+    );
+  }
+
   const priceId = getCreditPackStripePriceId(packKey);
   if (!priceId) {
     return NextResponse.json(
@@ -59,14 +71,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let customerId = getUser(auth.sub)?.stripeCustomerId;
+  let customerId = billing.stripeCustomerId;
   if (!customerId) {
     const c = await stripe.customers.create({
       email: auth.sub,
       metadata: { userId: auth.sub },
     });
     customerId = c.id;
-    setStripeCustomer(auth.sub, customerId);
+    await setStripeCustomer(auth.sub, customerId);
   }
 
   const base = appBaseUrl();

@@ -18,8 +18,10 @@ export interface TryOnJobRecord {
   status: TryOnJobStatus;
   category: GarmentCategory;
   garmentPhotoType: GarmentPhotoType;
+  provider?: string;
   createdAt: number;
   updatedAt: number;
+  completedAt?: number;
   userId?: string;
   requestId?: string;
   /** Internal correlation id for GPU provider */
@@ -31,6 +33,9 @@ export interface TryOnJobRecord {
   resultMimeType?: string;
   /** Public URL when result is stored in object storage */
   resultUrl?: string;
+  generatedImageId?: string;
+  sourcePersonImageId?: string;
+  sourceGarmentImageId?: string;
   retryCount: number;
   /** Wall-clock time for API request handling (ms) */
   requestDurationMs?: number;

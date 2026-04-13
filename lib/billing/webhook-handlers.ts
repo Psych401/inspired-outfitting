@@ -1,28 +1,26 @@
 import type Stripe from 'stripe';
 import { getStripe } from './stripe-client';
+import { assertCreditPackKey, packCredits, subscriptionCreditsForPlan, type SubscriptionPlanKey } from './products';
+import { normalizeSubscriptionPlanKey } from './plan-keys';
 import {
-  assertCreditPackKey,
-  assertSubscriptionPlanKey,
-  packCredits,
-  subscriptionCreditsForPlan,
-  type SubscriptionPlanKey,
-} from './products';
-import {
-  addCredits,
   getUser,
   patchUser,
   setStripeCustomer,
+  normalizeUserId,
   type SubscriptionStatus,
 } from './user-store';
 import { auditLog } from './audit';
-import { wasStripeEventProcessed, markStripeEventProcessed } from './stripe-events';
-import { appendLedger } from './ledger';
+import { insertStripeEventIfNew } from './stripe-events';
 import {
-  markInvoiceCreditsGranted,
-  markPackCheckoutGranted,
-  wasInvoiceCreditsGranted,
-  wasPackCheckoutGranted,
+  sourceKeyForInvoiceGrant,
+  sourceKeyForPackCheckoutGrant,
 } from './grant-idempotency';
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
+
+function isUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (error as { code?: string }).code === '23505';
+}
 
 function mapStripeSubStatus(status: Stripe.Subscription.Status): SubscriptionStatus {
   switch (status) {
@@ -43,31 +41,41 @@ function mapStripeSubStatus(status: Stripe.Subscription.Status): SubscriptionSta
   }
 }
 
-function grantSubscriptionCredits(
+async function grantSubscriptionCredits(
   userId: string,
   planKey: SubscriptionPlanKey,
   stripeEventId: string,
-  reason: string
-): void {
+  reason: string,
+  sourceKey: string
+): Promise<boolean> {
   const n = subscriptionCreditsForPlan(planKey);
-  addCredits(userId, n, reason);
-  appendLedger({
-    userId,
-    kind: 'grant',
-    amount: n,
-    reason,
-    ref: stripeEventId,
+  const supabase = getSupabaseServiceRoleClient();
+  const uid = normalizeUserId(userId);
+  const { error, data } = await supabase.rpc('app_grant_credits', {
+    p_user_id: uid,
+    p_amount: n,
+    p_reason: reason,
+    p_source_key: sourceKey,
+    p_stripe_event_id: stripeEventId,
   });
+  if (error) {
+    if (isUniqueViolation(error)) return false;
+    throw new Error(`Subscription grant failed: ${error.message}`);
+  }
+  const row = Array.isArray(data) ? data[0] : data;
   auditLog('credits_granted', {
-    userId,
+    userId: uid,
     amount: n,
     reason,
     planKey,
+    remaining: Number(row?.balance ?? 0),
   });
+  return true;
 }
 
 export async function processStripeEvent(event: Stripe.Event): Promise<void> {
-  if (wasStripeEventProcessed(event.id)) {
+  const inserted = await insertStripeEventIfNew(event.id, event.type);
+  if (!inserted) {
     auditLog('stripe_event_duplicate_ignored', { stripeEventId: event.id, type: event.type });
     return;
   }
@@ -89,15 +97,13 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         }
 
         const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-        if (customerId) setStripeCustomer(userId, customerId);
+        if (customerId) await setStripeCustomer(userId, customerId);
 
         if (session.mode === 'subscription') {
           const planKeyRaw = session.metadata?.planKey;
           if (!planKeyRaw) break;
-          let planKey: SubscriptionPlanKey;
-          try {
-            planKey = assertSubscriptionPlanKey(planKeyRaw);
-          } catch {
+          const planKey = normalizeSubscriptionPlanKey(planKeyRaw);
+          if (!planKey) {
             console.warn('[billing][webhook] invalid planKey on subscription checkout');
             break;
           }
@@ -105,7 +111,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             typeof session.subscription === 'string'
               ? session.subscription
               : session.subscription?.id;
-          patchUser(userId, {
+          await patchUser(userId, {
             subscriptionTier: planKey,
             subscriptionStatus: 'active',
             stripeSubscriptionId: subId,
@@ -120,7 +126,6 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         }
 
         if (session.mode === 'payment' && purchaseType === 'credit_pack') {
-          if (wasPackCheckoutGranted(session.id)) break;
           const packKeyRaw = session.metadata?.packKey;
           if (!packKeyRaw) break;
           let packKey: ReturnType<typeof assertCreditPackKey>;
@@ -131,20 +136,27 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             break;
           }
           const n = packCredits(packKey);
-          addCredits(userId, n, 'credit_pack_checkout');
-          markPackCheckoutGranted(session.id);
-          appendLedger({
-            userId,
-            kind: 'grant',
-            amount: n,
-            reason: 'credit_pack_checkout',
-            ref: event.id,
+          const sourceKey = sourceKeyForPackCheckoutGrant(session.id);
+          const uid = normalizeUserId(userId);
+          const supabase = getSupabaseServiceRoleClient();
+          const { error, data } = await supabase.rpc('app_grant_credits', {
+            p_user_id: uid,
+            p_amount: n,
+            p_reason: 'credit_pack_checkout',
+            p_source_key: sourceKey,
+            p_stripe_event_id: event.id,
           });
+          if (error && !isUniqueViolation(error)) {
+            throw new Error(`Pack credit grant failed: ${error.message}`);
+          }
+          if (error && isUniqueViolation(error)) break;
+          const row = Array.isArray(data) ? data[0] : data;
           auditLog('credits_granted', {
-            userId,
+            userId: uid,
             amount: n,
             reason: 'credit_pack',
             packKey,
+            remaining: Number(row?.balance ?? 0),
           });
         }
         break;
@@ -166,18 +178,18 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           break;
         }
 
-        let planKey: SubscriptionPlanKey;
-        try {
-          planKey = assertSubscriptionPlanKey(planKeyRaw);
-        } catch {
-          break;
-        }
+        const planKey = normalizeSubscriptionPlanKey(planKeyRaw);
+        if (!planKey) break;
 
         const br = invoice.billing_reason;
         if (br === 'subscription_create' || br === 'subscription_cycle' || br === 'subscription_update') {
-          if (wasInvoiceCreditsGranted(invoice.id)) break;
-          grantSubscriptionCredits(userId, planKey, event.id, `invoice_paid:${br}`);
-          markInvoiceCreditsGranted(invoice.id);
+          await grantSubscriptionCredits(
+            userId,
+            planKey,
+            event.id,
+            `invoice_paid:${br}`,
+            sourceKeyForInvoiceGrant(invoice.id)
+          );
         }
         break;
       }
@@ -189,14 +201,16 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         const planKeyRaw = sub.metadata?.planKey;
         let tier: SubscriptionPlanKey | 'none' = 'none';
         if (planKeyRaw) {
-          try {
-            tier = assertSubscriptionPlanKey(planKeyRaw);
-          } catch {
-            tier = getUser(userId)?.subscriptionTier ?? 'none';
+          const parsed = normalizeSubscriptionPlanKey(planKeyRaw);
+          if (parsed) {
+            tier = parsed;
+          } else {
+            const existing = await getUser(userId);
+            tier = existing?.subscriptionTier && existing.subscriptionTier !== 'none' ? existing.subscriptionTier : 'none';
           }
         }
         const st = mapStripeSubStatus(sub.status);
-        patchUser(userId, {
+        await patchUser(userId, {
           subscriptionStatus: st,
           subscriptionTier: st === 'canceled' || st === 'none' ? 'none' : tier,
           stripeSubscriptionId: sub.id,
@@ -214,7 +228,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         const sub = event.data.object as Stripe.Subscription;
         const userId = sub.metadata?.userId;
         if (!userId) break;
-        patchUser(userId, {
+        await patchUser(userId, {
           subscriptionStatus: 'canceled',
           subscriptionTier: 'none',
           stripeSubscriptionId: undefined,
@@ -232,7 +246,6 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         break;
     }
 
-    markStripeEventProcessed(event.id);
     auditLog('stripe_event_processed', { stripeEventId: event.id, type: event.type });
   } catch (e) {
     console.error('[billing][webhook] handler_error', { id: event.id, type: event.type, error: e });

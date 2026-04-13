@@ -1,13 +1,15 @@
 /**
  * Single source of truth for billing: plan/pack keys → Stripe price IDs (env) and credit amounts.
  * Never trust client-supplied prices or credit amounts.
+ *
+ * Fashion-branded plan keys: closet, studio, runway.
  */
 
-export type SubscriptionPlanKey = 'starter' | 'growth' | 'pro';
+export type SubscriptionPlanKey = 'closet' | 'studio' | 'runway';
 export type CreditPackKey = 'small' | 'medium' | 'large';
 export type PurchaseType = 'subscription' | 'credit_pack';
 
-const SUB_KEYS = new Set<string>(['starter', 'growth', 'pro']);
+const SUB_KEYS = new Set<string>(['closet', 'studio', 'runway']);
 const PACK_KEYS = new Set<string>(['small', 'medium', 'large']);
 
 export interface SubscriptionPlanDef {
@@ -25,9 +27,9 @@ export interface CreditPackDef {
 
 /** Internal metadata; not shown to clients as pricing authority. */
 export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanKey, Omit<SubscriptionPlanDef, 'key' | 'envPriceId'>> = {
-  starter: { creditsPerPeriod: 50 },
-  growth: { creditsPerPeriod: 150 },
-  pro: { creditsPerPeriod: 500 },
+  closet: { creditsPerPeriod: 50 },
+  studio: { creditsPerPeriod: 150 },
+  runway: { creditsPerPeriod: 500 },
 };
 
 export const CREDIT_PACKS: Record<CreditPackKey, Omit<CreditPackDef, 'key' | 'envPriceId'>> = {
@@ -44,9 +46,9 @@ function envPrice(key: string): string | undefined {
 export function getSubscriptionStripePriceId(planKey: string): string | null {
   if (!SUB_KEYS.has(planKey)) return null;
   const map: Record<SubscriptionPlanKey, string> = {
-    starter: 'STRIPE_PRICE_STARTER_SUB',
-    growth: 'STRIPE_PRICE_GROWTH_SUB',
-    pro: 'STRIPE_PRICE_PRO_SUB',
+    closet: 'STRIPE_PRICE_CLOSET_SUB',
+    studio: 'STRIPE_PRICE_STUDIO_SUB',
+    runway: 'STRIPE_PRICE_RUNWAY_SUB',
   };
   return envPrice(map[planKey as SubscriptionPlanKey]) ?? null;
 }
@@ -82,3 +84,10 @@ export function subscriptionCreditsForPlan(planKey: SubscriptionPlanKey): number
 export function packCredits(packKey: CreditPackKey): number {
   return CREDIT_PACKS[packKey].credits;
 }
+
+/** Display labels for UI (match internal keys). */
+export const PLAN_LABEL: Record<SubscriptionPlanKey, string> = {
+  closet: 'Closet',
+  studio: 'Studio',
+  runway: 'Runway',
+};

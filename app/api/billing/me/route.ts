@@ -9,7 +9,7 @@ export async function GET() {
   const auth = await requireSessionUser();
   if (auth instanceof NextResponse) return auth;
 
-  const u = getOrCreateUser(auth.sub);
+  const u = await getOrCreateUser(auth.sub);
   return NextResponse.json({
     userId: u.userId,
     credits: u.credits,

@@ -1,13 +1,12 @@
 /**
- * Credit checks for try-on generation — server-side balance in user-store (billing).
+ * Credit checks for try-on generation — Supabase-backed, server-side enforced.
  */
 
-import { addCredits, deductCredits, getOrCreateUser, normalizeUserId } from '@/lib/billing/user-store';
+import { getOrCreateUser, normalizeUserId } from '@/lib/billing/user-store';
 import { auditLog } from '@/lib/billing/audit';
-import { appendLedger } from '@/lib/billing/ledger';
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
 const DEFAULT_CREDIT_COST = 1;
-const DEFAULT_UNLIMITED_TEST_USERS = new Set<string>(['isaac.cronin@example.com']);
 
 export function getCreditCostPerGeneration(): number {
   const n = Number(process.env.TRY_ON_CREDIT_COST ?? DEFAULT_CREDIT_COST);
@@ -15,7 +14,7 @@ export function getCreditCostPerGeneration(): number {
 }
 
 function getUnlimitedUsers(): Set<string> {
-  const out = new Set<string>(DEFAULT_UNLIMITED_TEST_USERS);
+  const out = new Set<string>();
   const raw = process.env.TRY_ON_UNLIMITED_USERS ?? '';
   for (const part of raw.split(',')) {
     const v = part.trim().toLowerCase();
@@ -29,18 +28,18 @@ function isUnlimitedUser(userId: string | undefined): boolean {
   return getUnlimitedUsers().has(userId.trim().toLowerCase());
 }
 
-export function getBalance(userId: string): number {
+export async function getBalance(userId: string): Promise<number> {
   if (isUnlimitedUser(userId)) return Number.MAX_SAFE_INTEGER;
-  return getOrCreateUser(userId).credits;
+  return (await getOrCreateUser(userId)).credits;
 }
 
 /**
  * Atomically debit if sufficient balance (server-side store).
  */
-export function tryDebitCredits(
+export async function tryDebitCredits(
   userId: string | undefined,
   cost: number
-): { ok: true; remaining: number } | { ok: false; remaining: number } {
+): Promise<{ ok: true; remaining: number } | { ok: false; remaining: number }> {
   if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true') {
     return { ok: true, remaining: 999999 };
   }
@@ -52,26 +51,54 @@ export function tryDebitCredits(
   }
 
   const uid = normalizeUserId(userId);
-  const r = deductCredits(uid, cost);
-  if (r.ok) {
-    appendLedger({ userId: uid, kind: 'debit', amount: cost, reason: 'try_on_job' });
-    auditLog('credits_deducted', { userId: uid, amount: cost, remaining: r.remaining });
+  const supabase = getSupabaseServiceRoleClient();
+  const defaultCredits = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
+  const { data, error } = await supabase.rpc('app_debit_credits', {
+    p_user_id: uid,
+    p_amount: cost,
+    p_reason: 'try_on_job',
+    p_source_key: `debit:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+    p_default_credits: Number.isFinite(defaultCredits) ? Math.max(0, Math.floor(defaultCredits)) : 3,
+  });
+  if (error) {
+    throw new Error(`Debit credits failed: ${error.message}`);
   }
-  return r.ok ? { ok: true, remaining: r.remaining } : { ok: false, remaining: r.remaining };
+  const row = Array.isArray(data) ? data[0] : data;
+  const ok = Boolean(row?.ok);
+  const remaining = Number(row?.balance ?? 0);
+  if (ok) {
+    auditLog('credits_deducted', { userId: uid, amount: cost, remaining });
+    return { ok: true, remaining };
+  }
+  return { ok: false, remaining };
 }
 
-export function hasMinimumCredits(userId: string | undefined, cost: number): boolean {
+export async function hasMinimumCredits(userId: string | undefined, cost: number): Promise<boolean> {
   if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true') return true;
   if (isUnlimitedUser(userId)) return true;
   if (!userId) return false;
-  return getBalance(userId) >= cost;
+  return (await getBalance(userId)) >= cost;
 }
 
 /** Refund after a failed step when debit already occurred (idempotent per caller). */
-export function refundCredits(userId: string | undefined, amount: number): void {
+export async function refundCredits(
+  userId: string | undefined,
+  amount: number,
+  opts?: { reason?: string; sourceKey?: string; jobId?: string }
+): Promise<void> {
   if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true' || isUnlimitedUser(userId) || !userId) return;
   const uid = normalizeUserId(userId);
-  addCredits(uid, amount, 'refund');
-  appendLedger({ userId: uid, kind: 'restore', amount, reason: 'try_on_refund' });
-  auditLog('credits_restored', { userId: uid, amount });
+  const supabase = getSupabaseServiceRoleClient();
+  const defaultCredits = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
+  const { error, data } = await supabase.rpc('app_grant_credits', {
+    p_user_id: uid,
+    p_amount: amount,
+    p_reason: opts?.reason ?? 'try_on_refund',
+    p_source_key: opts?.sourceKey ?? null,
+    p_job_id: opts?.jobId ?? null,
+    p_default_credits: Number.isFinite(defaultCredits) ? Math.max(0, Math.floor(defaultCredits)) : 3,
+  });
+  if (error) throw new Error(`Refund credits failed: ${error.message}`);
+  const row = Array.isArray(data) ? data[0] : data;
+  auditLog('credits_restored', { userId: uid, amount, remaining: Number(row?.balance ?? 0) });
 }

@@ -7,6 +7,7 @@ import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
 import { requireSessionUser } from '@/lib/auth/require-user';
 import { isSessionSigningConfigured } from '@/lib/auth/session';
+import { saveUserImage } from '@/lib/db/images-repo';
 import {
   isInvalidOnePiecePhotoType,
   type GarmentCategory,
@@ -28,6 +29,9 @@ function clientIp(request: NextRequest): string {
 export async function POST(request: NextRequest) {
   const wallStart = Date.now();
   const reqTag = `tryon_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  let debitedUserId: string | null = null;
+  let debitedAmount = 0;
+  let jobCreated = false;
 
   try {
     const contentType = request.headers.get('content-type') ?? '';
@@ -104,13 +108,15 @@ export async function POST(request: NextRequest) {
     }
 
     const cost = getCreditCostPerGeneration();
-    const debit = tryDebitCredits(userId, cost);
+    const debit = await tryDebitCredits(userId, cost);
     if (!debit.ok) {
       return NextResponse.json(
         { error: 'Insufficient credits', code: 'INSUFFICIENT_CREDITS', remaining: debit.remaining },
         { status: 402 }
       );
     }
+    debitedUserId = userId;
+    debitedAmount = cost;
 
     const personBuf = Buffer.from(await personFile.arrayBuffer());
     const outfitBuf = Buffer.from(await outfitFile.arrayBuffer());
@@ -132,7 +138,12 @@ export async function POST(request: NextRequest) {
       );
     } catch (e) {
       if (debit.ok) {
-        refundCredits(userId, cost);
+        await refundCredits(userId, cost, {
+          reason: 'preprocess_failed',
+          sourceKey: `refund:preprocess:${requestId ?? reqTag}`,
+        });
+        debitedUserId = null;
+        debitedAmount = 0;
       }
       if (e instanceof ImageValidationError) {
         return NextResponse.json({ error: e.message, code: e.code }, { status: 400 });
@@ -140,9 +151,23 @@ export async function POST(request: NextRequest) {
       throw e;
     }
 
+    const personSaved = await saveUserImage({
+      userId,
+      imageType: 'person',
+      buffer: personBuf,
+      mimeType: personFile.type || 'application/octet-stream',
+    });
+    const garmentSaved = await saveUserImage({
+      userId,
+      imageType: 'garment',
+      buffer: outfitBuf,
+      mimeType: outfitFile.type || 'application/octet-stream',
+    });
+
     const store = getJobStore();
     const job = await store.create({
       status: 'queued',
+      provider: process.env.TRY_ON_GPU_PROVIDER ?? 'auto',
       category: category as GarmentCategory,
       garmentPhotoType: garmentPhotoType as GarmentPhotoType,
       userId,
@@ -150,7 +175,10 @@ export async function POST(request: NextRequest) {
       retryCount: 0,
       creditCostDebited: cost,
       creditRefundIssued: false,
+      sourcePersonImageId: personSaved.id,
+      sourceGarmentImageId: garmentSaved.id,
     });
+    jobCreated = true;
 
     console.log('[try-on][api] job_created', {
       reqTag,
@@ -189,7 +217,7 @@ export async function POST(request: NextRequest) {
       .catch((err) => console.error('[try-on][api] pipeline_error', { reqTag, jobId: job.id, err }));
 
     const body = {
-      ...statusForClient(jobRecord),
+      ...(await statusForClient(jobRecord)),
       status: 'queued' as const,
       estimatedSeconds: 45,
       creditsRemaining: debit.remaining,
@@ -202,6 +230,16 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (e) {
+    if (debitedUserId && debitedAmount > 0 && !jobCreated) {
+      try {
+        await refundCredits(debitedUserId, debitedAmount, {
+          reason: 'try_on_request_failure',
+          sourceKey: `refund:request_failure:${reqTag}`,
+        });
+      } catch {
+        // Keep original failure response; refund retries can be handled operationally.
+      }
+    }
     const msg = e instanceof Error ? e.message : 'Try-on request failed';
     console.error('[try-on][api] post_error', { reqTag, error: e });
     return NextResponse.json({ error: msg, code: 'INTERNAL_ERROR' }, { status: 500 });

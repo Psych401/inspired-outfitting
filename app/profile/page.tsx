@@ -1,10 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Button from '@/components/Button';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import UploadedImagesGallery from '@/components/UploadedImagesGallery';
+import { PLAN_LABEL, type SubscriptionPlanKey } from '@/lib/billing/products';
 
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 const DeleteIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>;
@@ -12,7 +13,12 @@ const RegenerateIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { user, history, logout, deleteHistoryItem, setRegenerate, uploadedPersonImages, uploadedOutfitImages } = useAuth();
+  const { user, billing, refreshBilling, history, logout, deleteHistoryItem, setRegenerate, uploadedPersonImages, uploadedOutfitImages } =
+    useAuth();
+
+  useEffect(() => {
+    void refreshBilling();
+  }, [refreshBilling]);
 
   if (!user) {
     return (
@@ -44,9 +50,12 @@ export default function ProfilePage() {
         {/* Subscription Info */}
         <div className="lg:col-span-1 bg-white p-8 rounded-lg shadow-lg h-fit">
           <h2 className="text-2xl font-heading font-semibold mb-4">My Subscription</h2>
-          <div className="bg-soft-blush/50 p-4 rounded-md text-center mb-4">
-            <p className="text-sm">Current Plan</p>
-            <p className="text-2xl font-bold text-dusty-rose">{user.subscription}</p>
+          <div className="bg-soft-blush/50 p-4 rounded-md text-center mb-4 space-y-1">
+            <p className="text-sm">Current plan</p>
+            <p className="text-2xl font-bold text-dusty-rose">{planLine(billing)}</p>
+            <p className="text-xs text-charcoal-grey/70">
+              {billing.loading ? '…' : `${billing.credits ?? '—'} credits`}
+            </p>
           </div>
           <Button onClick={() => router.push('/pricing')} variant="secondary" className="w-full text-base py-2">
             Change Plan
@@ -102,5 +111,18 @@ export default function ProfilePage() {
       </div>
     </div>
   );
+}
+
+function planLine(billing: {
+  loading: boolean;
+  subscriptionTier: string;
+  subscriptionStatus: string;
+}): string {
+  if (billing.loading) return '…';
+  if (billing.subscriptionTier === 'none') {
+    return 'Free · not subscribed';
+  }
+  const label = PLAN_LABEL[billing.subscriptionTier as SubscriptionPlanKey];
+  return `${label} · ${billing.subscriptionStatus}`;
 }
 

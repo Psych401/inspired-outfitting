@@ -59,14 +59,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let customerId = getUser(auth.sub)?.stripeCustomerId;
+  const existingUser = await getUser(auth.sub);
+  let customerId = existingUser?.stripeCustomerId;
   if (!customerId) {
     const c = await stripe.customers.create({
       email: auth.sub,
       metadata: { userId: auth.sub },
     });
     customerId = c.id;
-    setStripeCustomer(auth.sub, customerId);
+    await setStripeCustomer(auth.sub, customerId);
   }
 
   const base = appBaseUrl();

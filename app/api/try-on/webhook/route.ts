@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getJobStore } from '@/lib/try-on/job-store';
 import { logJobEvent, recordMetrics } from '@/lib/try-on/logger';
+import { saveUserImage } from '@/lib/db/images-repo';
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
+import { auditLog } from '@/lib/billing/audit';
 
 export const runtime = 'nodejs';
 
@@ -92,6 +95,20 @@ export async function POST(request: NextRequest) {
   const t0 = Date.now();
 
   if (body.status === 'failed' || body.error) {
+    if (job.userId) {
+      const supabase = getSupabaseServiceRoleClient();
+      const { data, error } = await supabase.rpc('app_refund_job_credit_once', {
+        p_job_id: body.jobId,
+        p_reason: 'gpu_webhook_failed',
+        p_source_key: `refund:${body.jobId}:gpu_webhook_failed`,
+      });
+      if (!error) {
+        const row = Array.isArray(data) ? data[0] : data;
+        if (row?.refunded) {
+          auditLog('credits_restored', { userId: job.userId, jobId: job.id, reason: 'gpu_webhook_failed' });
+        }
+      }
+    }
     await store.update(body.jobId, {
       status: 'failed',
       error: body.error ?? 'GPU reported failure',
@@ -114,12 +131,25 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.resultBase64) {
+    if (!job.userId) {
+      return NextResponse.json({ error: 'Job missing user context' }, { status: 500 });
+    }
+    const mimeType = body.mimeType ?? 'image/jpeg';
+    const resultBuffer = Buffer.from(body.resultBase64, 'base64');
+    const generatedImage = await saveUserImage({
+      userId: job.userId,
+      imageType: 'generated',
+      buffer: resultBuffer,
+      mimeType,
+      jobId: body.jobId,
+      sourcePersonImageId: job.sourcePersonImageId,
+      sourceGarmentImageId: job.sourceGarmentImageId,
+    });
     await store.update(body.jobId, {
       status: 'succeeded',
-      resultBase64: body.resultBase64,
-      resultMimeType: body.mimeType ?? 'image/jpeg',
-      resultUrl: body.resultUrl,
+      generatedImageId: generatedImage.id,
       gpuDurationMs: body.gpuDurationMs,
+      completedAt: Date.now(),
     });
     const updated = await store.get(body.jobId);
     if (updated) {
@@ -137,10 +167,32 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.resultUrl) {
+    if (job.userId) {
+      try {
+        const response = await fetch(body.resultUrl);
+        if (response.ok) {
+          const arr = await response.arrayBuffer();
+          const mimeType = response.headers.get('content-type') || 'image/jpeg';
+          const generatedImage = await saveUserImage({
+            userId: job.userId,
+            imageType: 'generated',
+            buffer: Buffer.from(arr),
+            mimeType,
+            jobId: body.jobId,
+            sourcePersonImageId: job.sourcePersonImageId,
+            sourceGarmentImageId: job.sourceGarmentImageId,
+          });
+          await store.update(body.jobId, { generatedImageId: generatedImage.id });
+        }
+      } catch {
+        // Keep URL fallback if provider-hosted image cannot be fetched right now.
+      }
+    }
     await store.update(body.jobId, {
       status: 'succeeded',
       resultUrl: body.resultUrl,
       gpuDurationMs: body.gpuDurationMs,
+      completedAt: Date.now(),
     });
     const updated = await store.get(body.jobId);
     if (updated) {

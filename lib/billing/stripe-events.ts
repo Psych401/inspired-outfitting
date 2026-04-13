@@ -1,19 +1,20 @@
-/**
- * Idempotent Stripe webhook processing — in-memory store of event IDs.
- * Replace with DB table for horizontal scale.
- */
+import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
-const MAX_IDS = 50_000;
-const processed = new Set<string>();
-
-export function wasStripeEventProcessed(eventId: string): boolean {
-  return processed.has(eventId);
+function isUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: string }).code;
+  return code === '23505';
 }
 
-export function markStripeEventProcessed(eventId: string): void {
-  if (processed.size >= MAX_IDS) {
-    const toDrop = [...processed].slice(0, Math.floor(MAX_IDS / 10));
-    for (const id of toDrop) processed.delete(id);
-  }
-  processed.add(eventId);
+/** Returns false when already processed (duplicate). */
+export async function insertStripeEventIfNew(eventId: string, eventType: string): Promise<boolean> {
+  const supabase = getSupabaseServiceRoleClient();
+  const { error } = await supabase.from('stripe_webhook_events').insert({
+    stripe_event_id: eventId,
+    event_type: eventType,
+    processed_at: new Date().toISOString(),
+  });
+  if (!error) return true;
+  if (isUniqueViolation(error)) return false;
+  throw new Error(`stripe_webhook_events insert failed: ${error.message}`);
 }

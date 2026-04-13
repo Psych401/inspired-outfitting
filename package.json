@@ -9,6 +9,7 @@
     "lint": "next lint ."
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.8",
     "stripe": "^17.7.0",
     "@google/genai": "^1.42.0",
     "google-auth-library": "^10.5.0",
