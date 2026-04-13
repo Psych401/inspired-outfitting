@@ -1,0 +1,20 @@
+/**
+ * Security/billing audit logs — no secrets, no tokens, no PII beyond userId.
+ */
+
+type AuditEvent =
+  | 'checkout_session_created'
+  | 'stripe_webhook_received'
+  | 'stripe_event_processed'
+  | 'stripe_event_duplicate_ignored'
+  | 'credits_granted'
+  | 'credits_deducted'
+  | 'credits_restored'
+  | 'subscription_status_changed';
+
+export function auditLog(
+  event: AuditEvent,
+  meta: Record<string, unknown> & { userId?: string }
+): void {
+  console.log('[billing][audit]', JSON.stringify({ event, ...meta, at: Date.now() }));
+}

@@ -5,6 +5,8 @@ import { getCreditCostPerGeneration, tryDebitCredits, refundCredits } from '@/li
 import { checkRateLimit, rateLimitKey } from '@/lib/try-on/rate-limit';
 import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
+import { requireSessionUser } from '@/lib/auth/require-user';
+import { isSessionSigningConfigured } from '@/lib/auth/session';
 import {
   isInvalidOnePiecePhotoType,
   type GarmentCategory,
@@ -38,8 +40,19 @@ export async function POST(request: NextRequest) {
     const outfitFile = form.get('outfit');
     const categoryRaw = form.get('category');
     const garmentPhotoTypeRaw = form.get('garment_photo_type');
-    const userId = (form.get('userId') as string | null) ?? request.headers.get('x-user-id') ?? undefined;
     const requestId = (form.get('requestId') as string | null) ?? undefined;
+
+    if (!isSessionSigningConfigured()) {
+      return NextResponse.json(
+        { error: 'Server session not configured', code: 'SESSION_NOT_CONFIGURED' },
+        { status: 503 }
+      );
+    }
+
+    const auth = await requireSessionUser();
+    if (auth instanceof NextResponse) return auth;
+    const userId = auth.sub;
+
     console.log('[try-on][api] request_received', {
       reqTag,
       requestId,
@@ -135,6 +148,8 @@ export async function POST(request: NextRequest) {
       userId,
       requestId,
       retryCount: 0,
+      creditCostDebited: cost,
+      creditRefundIssued: false,
     });
 
     console.log('[try-on][api] job_created', {

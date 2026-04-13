@@ -307,10 +307,10 @@ export default function DressYourselfPage() {
       return;
     }
 
-    if (!isAuthenticated || user?.subscription === 'Free') {
-        setError('Please subscribe to generate unlimited try-ons.');
-        setTimeout(()=>router.push('/pricing'), 2000);
-        return;
+    if (!isAuthenticated || !user?.email) {
+      setError('Please sign in to use try-on.');
+      setTimeout(() => router.push('/auth'), 2000);
+      return;
     }
 
     setIsLoading(true);
@@ -328,9 +328,6 @@ export default function DressYourselfPage() {
       formData.append('outfit', outfitImage, outfitImage.name);
       formData.append('category', garmentCategory);
       formData.append('garment_photo_type', garmentPhotoType);
-      if (user?.email) {
-        formData.append('userId', user.email);
-      }
       formData.append('requestId', requestId);
 
       console.log('[try-on][client] submit', {
@@ -353,6 +350,7 @@ export default function DressYourselfPage() {
       const submitRes = await fetch('/api/try-on', {
         method: 'POST',
         body: formData,
+        credentials: 'include',
       });
       const submitBody = await submitRes.json().catch(() => ({}));
       if (!submitRes.ok) {

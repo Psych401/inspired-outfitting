@@ -36,7 +36,7 @@ export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const { login } = useAuth();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const target = e.target as typeof e.target & {
         email: { value: string };
@@ -49,6 +49,20 @@ export default function AuthPage() {
       subscription: 'Standard' as const, // Default to standard on login/signup for demo
     };
     login(user);
+    try {
+      const res = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: user.email }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error('[auth] session cookie failed', res.status, body);
+      }
+    } catch (err) {
+      console.error('[auth] session cookie error', err);
+    }
     router.push('/profile');
   };
 

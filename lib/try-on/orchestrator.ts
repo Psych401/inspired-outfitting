@@ -6,6 +6,8 @@ import { getJobStore } from './job-store';
 import type { TryOnJobRecord } from './types';
 import { createGpuProvider } from './providers/factory';
 import { logJobEvent, recordMetrics } from './logger';
+import { getCreditCostPerGeneration, refundCredits } from './credits';
+import { auditLog } from '@/lib/billing/audit';
 
 function getPublicBaseUrl(): string {
   const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL;
@@ -88,10 +90,28 @@ export async function runTryOnJob(
     });
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
+    const cost = job.creditCostDebited ?? getCreditCostPerGeneration();
+    let refundIssued = false;
+    if (
+      job.userId &&
+      job.creditCostDebited &&
+      job.creditCostDebited > 0 &&
+      !job.creditRefundIssued
+    ) {
+      refundCredits(job.userId, cost);
+      auditLog('credits_restored', {
+        userId: job.userId,
+        amount: cost,
+        reason: 'gpu_submit_failed',
+        jobId: job.id,
+      });
+      refundIssued = true;
+    }
     await store.update(job.id, {
       status: 'failed',
       error: err.message,
       errorCode: 'GPU_SUBMIT_FAILED',
+      ...(refundIssued ? { creditRefundIssued: true } : {}),
     });
     const updated = await store.get(job.id);
     if (updated) {

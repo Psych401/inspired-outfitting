@@ -89,11 +89,11 @@ _hf_auth_initialized = False
 
 def init_hf_auth_once() -> None:
     """
-    Initialize HF Hub authentication once per process at startup.
-    - Reads HF_TOKEN from env
-    - Mirrors token to HUGGINGFACE_HUB_TOKEN for downstream libraries
+    Initialize HF Hub env once per process at startup (no huggingface_hub.login()).
+    - Reads HF_TOKEN from env (e.g. Modal secret hf-secret)
+    - Mirrors to HUGGINGFACE_HUB_TOKEN so Hub clients use the same token
     - Optionally enables hf_transfer acceleration
-    - Never logs or exposes token value
+    - Never logs or exposes token values
     """
     global _hf_auth_initialized
     if _hf_auth_initialized:
@@ -105,19 +105,10 @@ def init_hf_auth_once() -> None:
 
     hf_token = (os.environ.get("HF_TOKEN") or "").strip()
     if not hf_token:
-        logger.info("hf_auth: no HF_TOKEN found; continuing unauthenticated")
         return
 
     os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
-    try:
-        from huggingface_hub import login
-
-        # in-process login so all huggingface_hub calls are authenticated
-        login(token=hf_token)
-        logger.info("hf_auth: authenticated Hugging Face Hub client")
-    except Exception as e:
-        # Do not crash startup; fall back to env-token behavior where possible
-        logger.warning("hf_auth: login() failed, continuing with env token only (%s)", e)
+    logger.info("hf_auth: using environment token for Hugging Face Hub")
 
 
 init_hf_auth_once()

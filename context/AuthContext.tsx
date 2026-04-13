@@ -19,6 +19,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, []);
 
   const logout = useCallback(() => {
+    void fetch('/api/auth/session', { method: 'DELETE', credentials: 'include' });
     setUser(null);
     setHistory([]);
     setUploadedPersonImages([]);

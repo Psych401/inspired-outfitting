@@ -37,6 +37,10 @@ export interface TryOnJobRecord {
   /** GPU inference time reported by worker (ms) */
   gpuDurationMs?: number;
   estimatedCostUsd?: number;
+  /** Credits debited for this job (for GPU failure refund). */
+  creditCostDebited?: number;
+  /** True after a one-time refund for failed GPU submit. */
+  creditRefundIssued?: boolean;
   /** Structured log lines for ops */
   log: TryOnLogEntry[];
 }
