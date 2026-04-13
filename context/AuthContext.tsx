@@ -66,6 +66,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [user]);
 
+  /** Restore client user state from the httpOnly session cookie (e.g. return from Stripe checkout). */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { authenticated?: boolean; userId?: string };
+        if (data.authenticated && typeof data.userId === 'string' && data.userId) {
+          const email = data.userId;
+          setUser({ email, name: email.split('@')[0] || 'Member' });
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     void refreshBilling();
   }, [refreshBilling]);

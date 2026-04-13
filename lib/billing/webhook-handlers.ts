@@ -41,6 +41,7 @@ function mapStripeSubStatus(status: Stripe.Subscription.Status): SubscriptionSta
   }
 }
 
+/** Adds credits via `app_grant_credits` (balance += amount); does not replace the balance. */
 async function grantSubscriptionCredits(
   userId: string,
   planKey: SubscriptionPlanKey,

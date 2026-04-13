@@ -3,6 +3,7 @@
  */
 
 import { getOrCreateUser, normalizeUserId } from '@/lib/billing/user-store';
+import { defaultCreditsForNewUser } from '@/lib/billing/default-free-credits';
 import { auditLog } from '@/lib/billing/audit';
 import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
@@ -52,13 +53,13 @@ export async function tryDebitCredits(
 
   const uid = normalizeUserId(userId);
   const supabase = getSupabaseServiceRoleClient();
-  const defaultCredits = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
+  const defaultCredits = defaultCreditsForNewUser();
   const { data, error } = await supabase.rpc('app_debit_credits', {
     p_user_id: uid,
     p_amount: cost,
     p_reason: 'try_on_job',
     p_source_key: `debit:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
-    p_default_credits: Number.isFinite(defaultCredits) ? Math.max(0, Math.floor(defaultCredits)) : 3,
+    p_default_credits: defaultCredits,
   });
   if (error) {
     throw new Error(`Debit credits failed: ${error.message}`);
@@ -89,14 +90,14 @@ export async function refundCredits(
   if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true' || isUnlimitedUser(userId) || !userId) return;
   const uid = normalizeUserId(userId);
   const supabase = getSupabaseServiceRoleClient();
-  const defaultCredits = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
+  const defaultCredits = defaultCreditsForNewUser();
   const { error, data } = await supabase.rpc('app_grant_credits', {
     p_user_id: uid,
     p_amount: amount,
     p_reason: opts?.reason ?? 'try_on_refund',
     p_source_key: opts?.sourceKey ?? null,
     p_job_id: opts?.jobId ?? null,
-    p_default_credits: Number.isFinite(defaultCredits) ? Math.max(0, Math.floor(defaultCredits)) : 3,
+    p_default_credits: defaultCredits,
   });
   if (error) throw new Error(`Refund credits failed: ${error.message}`);
   const row = Array.isArray(data) ? data[0] : data;

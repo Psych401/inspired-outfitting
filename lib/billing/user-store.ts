@@ -1,6 +1,7 @@
 import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 import type { SubscriptionPlanKey } from './products';
 import { normalizeSubscriptionPlanKey } from './plan-keys';
+import { defaultCreditsForNewUser } from './default-free-credits';
 
 export type SubscriptionStatus = 'none' | 'active' | 'past_due' | 'canceled' | 'trialing' | 'unpaid';
 
@@ -12,12 +13,6 @@ export interface UserBillingRecord {
   stripeSubscriptionId?: string;
   credits: number;
   updatedAt: number;
-}
-
-/** New accounts: exactly 3 free credits unless TRY_ON_DEFAULT_USER_CREDITS overrides (non-negative). */
-function defaultCredits(): number {
-  const n = Number(process.env.TRY_ON_DEFAULT_USER_CREDITS ?? 3);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3;
 }
 
 function mapTierFromDb(raw: string | null | undefined): SubscriptionPlanKey | 'none' {
@@ -47,7 +42,7 @@ export async function getOrCreateUser(userId: string): Promise<UserBillingRecord
   const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
 
-  const { data: row, error } = await supabase
+  let { data: row, error } = await supabase
     .from('user_billing_state')
     .select('*')
     .eq('user_id', id)
@@ -55,26 +50,47 @@ export async function getOrCreateUser(userId: string): Promise<UserBillingRecord
   if (error) throw new Error(`user_billing_state read failed: ${error.message}`);
 
   if (!row) {
+    const seed = defaultCreditsForNewUser();
     const { data: inserted, error: insertError } = await supabase
       .from('user_billing_state')
       .insert({
         user_id: id,
-        credit_balance: defaultCredits(),
+        credit_balance: seed,
         subscription_tier: 'none',
         subscription_status: 'none',
       })
       .select('*')
-      .single();
-    if (insertError) throw new Error(`user_billing_state insert failed: ${insertError.message}`);
-    return {
-      userId: inserted.user_id,
-      stripeCustomerId: inserted.stripe_customer_id ?? undefined,
-      subscriptionTier: mapTierFromDb(inserted.subscription_tier),
-      subscriptionStatus: inserted.subscription_status,
-      stripeSubscriptionId: inserted.stripe_subscription_id ?? undefined,
-      credits: inserted.credit_balance,
-      updatedAt: Date.parse(inserted.updated_at),
-    };
+      .maybeSingle();
+
+    if (insertError?.code === '23505') {
+      const { data: existing, error: readErr } = await supabase
+        .from('user_billing_state')
+        .select('*')
+        .eq('user_id', id)
+        .single();
+      if (readErr) throw new Error(`user_billing_state read after duplicate failed: ${readErr.message}`);
+      row = existing;
+    } else if (insertError) {
+      throw new Error(`user_billing_state insert failed: ${insertError.message}`);
+    } else if (inserted) {
+      return {
+        userId: inserted.user_id,
+        stripeCustomerId: inserted.stripe_customer_id ?? undefined,
+        subscriptionTier: mapTierFromDb(inserted.subscription_tier),
+        subscriptionStatus: inserted.subscription_status,
+        stripeSubscriptionId: inserted.stripe_subscription_id ?? undefined,
+        credits: inserted.credit_balance,
+        updatedAt: Date.parse(inserted.updated_at),
+      };
+    } else {
+      const { data: existing, error: readErr } = await supabase
+        .from('user_billing_state')
+        .select('*')
+        .eq('user_id', id)
+        .single();
+      if (readErr) throw new Error(`user_billing_state read failed after insert: ${readErr.message}`);
+      row = existing;
+    }
   }
 
   return {

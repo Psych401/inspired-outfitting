@@ -136,9 +136,11 @@ const GarmentTypeSelector: React.FC<{
 };
 
 const GarmentPhotoTypeSelector: React.FC<{
+  category: GarmentCategory | null;
   value: GarmentPhotoType | null;
   onSelectType: (type: GarmentPhotoType) => void;
-}> = ({ value, onSelectType }) => {
+}> = ({ category, value, onSelectType }) => {
+  const flatLayDisabled = category === 'one-pieces';
   const options: Array<{ id: GarmentPhotoType; label: string; description: string }> = [
     {
       id: 'flat-lay',
@@ -157,20 +159,33 @@ const GarmentPhotoTypeSelector: React.FC<{
       <h3 className="text-2xl font-heading font-semibold mb-2">4. Select Garment Photo Type</h3>
       <p className="text-charcoal-grey/70 mb-4">Required for FASHN VTON processing.</p>
       <div className="grid gap-3">
-        {options.map((option) => (
-          <button
-            key={option.id}
-            onClick={() => onSelectType(option.id)}
-            className={`w-full text-left rounded-lg border-2 p-4 transition-all duration-200 ${
-              value === option.id
-                ? 'bg-dusty-rose/10 border-dusty-rose shadow-md'
-                : 'bg-warm-cream/50 border-gray-200 hover:border-dusty-rose/50 hover:bg-soft-blush/50'
-            }`}
-          >
-            <p className="font-semibold text-charcoal-grey">{option.label}</p>
-            <p className="text-sm text-charcoal-grey/70">{option.description}</p>
-          </button>
-        ))}
+        {options.map((option) => {
+          const disabled = option.id === 'flat-lay' && flatLayDisabled;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              disabled={disabled}
+              aria-disabled={disabled}
+              onClick={() => {
+                if (!disabled) onSelectType(option.id);
+              }}
+              className={`w-full text-left rounded-lg border-2 p-4 transition-all duration-200 ${
+                disabled
+                  ? 'opacity-40 cursor-not-allowed border-gray-200 bg-gray-50 text-charcoal-grey/50'
+                  : value === option.id
+                    ? 'bg-dusty-rose/10 border-dusty-rose shadow-md'
+                    : 'bg-warm-cream/50 border-gray-200 hover:border-dusty-rose/50 hover:bg-soft-blush/50'
+              }`}
+            >
+              <p className="font-semibold text-charcoal-grey">{option.label}</p>
+              <p className="text-sm text-charcoal-grey/70">{option.description}</p>
+              {disabled && (
+                <p className="text-xs text-charcoal-grey/50 mt-2">Not available for one-piece garments — use model-worn.</p>
+              )}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -213,6 +228,9 @@ export default function DressYourselfPage() {
     const q = new URLSearchParams(window.location.search);
     if (q.get('checkout') === 'success') {
       void refreshBilling();
+      q.delete('checkout');
+      const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
+      window.history.replaceState({}, '', next);
     }
   }, [refreshBilling]);
 
@@ -501,6 +519,10 @@ export default function DressYourselfPage() {
               value={garmentCategory}
               onSelectType={(value) => {
                 setGarmentCategory(value);
+                setGarmentPhotoType((prev) => {
+                  if (value === 'one-pieces' && prev === 'flat-lay') return 'model';
+                  return prev;
+                });
                 setError(null);
               }}
             />
@@ -513,6 +535,7 @@ export default function DressYourselfPage() {
 
           {outfitImage && (
             <GarmentPhotoTypeSelector
+              category={garmentCategory}
               value={garmentPhotoType}
               onSelectType={(value) => {
                 setGarmentPhotoType(value);

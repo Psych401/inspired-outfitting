@@ -7,6 +7,7 @@ import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
 import { requireSessionUser } from '@/lib/auth/require-user';
 import { isSessionSigningConfigured } from '@/lib/auth/session';
+import { shouldForceTryOnFailAfterDebit } from '@/lib/billing/default-free-credits';
 import { saveUserImage } from '@/lib/db/images-repo';
 import {
   isInvalidOnePiecePhotoType,
@@ -117,6 +118,10 @@ export async function POST(request: NextRequest) {
     }
     debitedUserId = userId;
     debitedAmount = cost;
+
+    if (shouldForceTryOnFailAfterDebit()) {
+      throw new Error('TRY_ON_FORCE_FAIL_AFTER_DEBIT (dev-only)');
+    }
 
     const personBuf = Buffer.from(await personFile.arrayBuffer());
     const outfitBuf = Buffer.from(await outfitFile.arrayBuffer());

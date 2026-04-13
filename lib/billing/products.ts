@@ -27,15 +27,15 @@ export interface CreditPackDef {
 
 /** Internal metadata; not shown to clients as pricing authority. */
 export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanKey, Omit<SubscriptionPlanDef, 'key' | 'envPriceId'>> = {
-  closet: { creditsPerPeriod: 50 },
-  studio: { creditsPerPeriod: 150 },
+  closet: { creditsPerPeriod: 80 },
+  studio: { creditsPerPeriod: 220 },
   runway: { creditsPerPeriod: 500 },
 };
 
 export const CREDIT_PACKS: Record<CreditPackKey, Omit<CreditPackDef, 'key' | 'envPriceId'>> = {
-  small: { credits: 10 },
-  medium: { credits: 50 },
-  large: { credits: 150 },
+  small: { credits: 30 },
+  medium: { credits: 70 },
+  large: { credits: 130 },
 };
 
 function envPrice(key: string): string | undefined {
@@ -90,4 +90,18 @@ export const PLAN_LABEL: Record<SubscriptionPlanKey, string> = {
   closet: 'Closet',
   studio: 'Studio',
   runway: 'Runway',
+};
+
+/** Display names for credit packs (internal keys remain small | medium | large). */
+export const PACK_LABEL: Record<CreditPackKey, string> = {
+  small: 'Mini Credit Pack',
+  medium: 'Style Credit Pack',
+  large: 'Wardrobe Credit Pack',
+};
+
+/** Approximate EUR display prices (one-time); billed via Stripe. */
+export const PACK_PRICE_EUR: Record<CreditPackKey, string> = {
+  small: '€4.99',
+  medium: '€9.99',
+  large: '€19.99',
 };

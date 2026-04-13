@@ -62,7 +62,7 @@ export default function AuthPage() {
     } catch (err) {
       console.error('[auth] session cookie error', err);
     }
-    router.push('/profile');
+    router.push(isLogin ? '/profile' : '/pricing');
   };
 
   return (

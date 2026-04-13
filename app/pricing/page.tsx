@@ -4,9 +4,18 @@ import React from 'react';
 import Button from '@/components/Button';
 import { CheckIcon, SparklesIcon } from '@/components/IconComponents';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { canPurchaseCreditPacks } from '@/lib/billing/subscription';
-import { PLAN_LABEL, type SubscriptionPlanKey } from '@/lib/billing/products';
+import {
+  PACK_LABEL,
+  PACK_PRICE_EUR,
+  PLAN_LABEL,
+  packCredits,
+  subscriptionCreditsForPlan,
+  type CreditPackKey,
+  type SubscriptionPlanKey,
+} from '@/lib/billing/products';
 import type { SubscriptionStatus } from '@/lib/billing/user-store';
 
 const PricingCard: React.FC<{
@@ -56,7 +65,7 @@ const PricingCard: React.FC<{
         ))}
         <li className="flex items-start">
           <CheckIcon className="text-gold-beige w-5 h-5 mr-3 mt-1 flex-shrink-0" />
-          <span className="text-charcoal-grey/80 font-medium">Credits reset monthly</span>
+          <span className="text-charcoal-grey/80 font-medium">Credits added to your balance each billing period</span>
         </li>
       </ul>
 
@@ -68,17 +77,19 @@ const PricingCard: React.FC<{
 };
 
 const AddOnCard: React.FC<{
+  title: string;
   credits: number;
   price: string;
   onPurchase: () => void;
   disabled?: boolean;
-}> = ({ credits, price, onPurchase, disabled }) => {
+}> = ({ title, credits, price, onPurchase, disabled }) => {
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow flex flex-col items-center text-center">
       <div className="w-12 h-12 bg-soft-blush rounded-full flex items-center justify-center mb-3 text-dusty-rose">
         <SparklesIcon className="w-6 h-6" />
       </div>
-      <h4 className="text-xl font-bold text-charcoal-grey">{credits} Credits</h4>
+      <h4 className="text-xl font-bold text-charcoal-grey">{title}</h4>
+      <p className="text-sm text-charcoal-grey/70 mt-1">{credits} credits</p>
       <p className="text-2xl font-heading font-bold text-dusty-rose my-2">{price}</p>
       <p className="text-xs text-charcoal-grey/50 mb-4">One-time payment</p>
       <Button onClick={onPurchase} variant="secondary" className="w-full text-sm py-2" disabled={disabled}>
@@ -130,7 +141,7 @@ export default function PricingPage() {
     }
   }
 
-  async function startCreditPackCheckout(packKey: 'small' | 'medium' | 'large') {
+  async function startCreditPackCheckout(packKey: CreditPackKey) {
     if (!user) {
       router.push('/auth');
       return;
@@ -169,12 +180,12 @@ export default function PricingPage() {
           </p>
         </div>
 
-        <div id="subscription-plans" className="scroll-mt-24 grid lg:grid-cols-3 gap-8 max-w-6xl mx-auto items-start mb-20">
+        <div id="subscription-plans" className="scroll-mt-24 grid lg:grid-cols-3 gap-8 max-w-6xl mx-auto items-start mb-12">
           <PricingCard
             plan={PLAN_LABEL.closet}
             price="€9.99"
-            credits={50}
-            costPerCredit="~€0.20"
+            credits={subscriptionCreditsForPlan('closet')}
+            costPerCredit="~€0.12"
             features={['Curated generation speed', 'HD quality downloads', 'Access to community styles']}
             onSubscribe={() => startSubscriptionCheckout('closet')}
             disabled={checkoutLoading !== null}
@@ -182,8 +193,8 @@ export default function PricingPage() {
           <PricingCard
             plan={PLAN_LABEL.studio}
             price="€19.99"
-            credits={150}
-            costPerCredit="~€0.13"
+            credits={subscriptionCreditsForPlan('studio')}
+            costPerCredit="~€0.09"
             features={['Fast generation speed', '4K Ultra-HD downloads', 'Priority support', 'Private gallery']}
             isFeatured
             onSubscribe={() => startSubscriptionCheckout('studio')}
@@ -192,7 +203,7 @@ export default function PricingPage() {
           <PricingCard
             plan={PLAN_LABEL.runway}
             price="€39.99"
-            credits={500}
+            credits={subscriptionCreditsForPlan('runway')}
             costPerCredit="~€0.08"
             features={[
               'Turbo generation speed',
@@ -206,6 +217,13 @@ export default function PricingPage() {
           />
         </div>
 
+        <p className="text-center text-charcoal-grey/80 mb-16">
+          <Link href="/dress-yourself" className="text-dusty-rose font-semibold underline underline-offset-4 hover:text-dusty-rose/80">
+            Try for free first
+          </Link>
+          <span className="text-charcoal-grey/60"> — use your 3 free credits on the try-on page.</span>
+        </p>
+
         <div id="credit-packs" className="scroll-mt-24 max-w-4xl mx-auto animate-fade-in-up">
           <div className="text-center mb-10">
             <h2 className="text-3xl font-heading font-bold text-charcoal-grey">Need more credits?</h2>
@@ -215,20 +233,23 @@ export default function PricingPage() {
           {user && packsAllowed ? (
             <div className="grid md:grid-cols-3 gap-6">
               <AddOnCard
-                credits={10}
-                price="Pack S"
+                title={PACK_LABEL.small}
+                credits={packCredits('small')}
+                price={PACK_PRICE_EUR.small}
                 onPurchase={() => startCreditPackCheckout('small')}
                 disabled={checkoutLoading !== null}
               />
               <AddOnCard
-                credits={50}
-                price="Pack M"
+                title={PACK_LABEL.medium}
+                credits={packCredits('medium')}
+                price={PACK_PRICE_EUR.medium}
                 onPurchase={() => startCreditPackCheckout('medium')}
                 disabled={checkoutLoading !== null}
               />
               <AddOnCard
-                credits={150}
-                price="Pack L"
+                title={PACK_LABEL.large}
+                credits={packCredits('large')}
+                price={PACK_PRICE_EUR.large}
                 onPurchase={() => startCreditPackCheckout('large')}
                 disabled={checkoutLoading !== null}
               />
