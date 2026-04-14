@@ -6,8 +6,8 @@ import { checkRateLimit, rateLimitKey } from '@/lib/try-on/rate-limit';
 import { runTryOnJob } from '@/lib/try-on/orchestrator';
 import { logJobEvent } from '@/lib/try-on/logger';
 import { requireSessionUser } from '@/lib/auth/require-user';
-import { isSessionSigningConfigured } from '@/lib/auth/session';
 import { shouldForceTryOnFailAfterDebit } from '@/lib/billing/default-free-credits';
+import { ensureUserProfile } from '@/lib/billing/user-store';
 import { saveUserImage } from '@/lib/db/images-repo';
 import {
   isInvalidOnePiecePhotoType,
@@ -47,16 +47,10 @@ export async function POST(request: NextRequest) {
     const garmentPhotoTypeRaw = form.get('garment_photo_type');
     const requestId = (form.get('requestId') as string | null) ?? undefined;
 
-    if (!isSessionSigningConfigured()) {
-      return NextResponse.json(
-        { error: 'Server session not configured', code: 'SESSION_NOT_CONFIGURED' },
-        { status: 503 }
-      );
-    }
-
-    const auth = await requireSessionUser();
+    const auth = await requireSessionUser(request);
     if (auth instanceof NextResponse) return auth;
     const userId = auth.sub;
+    await ensureUserProfile(userId, { email: auth.email, fullName: auth.fullName, avatarUrl: auth.avatarUrl });
 
     console.log('[try-on][api] request_received', {
       reqTag,

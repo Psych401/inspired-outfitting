@@ -11,9 +11,7 @@ import {
   PACK_LABEL,
   PACK_PRICE_EUR,
   PLAN_LABEL,
-  comparePlanTier,
   packCredits,
-  subscriptionCreditDifference,
   subscriptionCreditsForPlan,
   type CreditPackKey,
   type SubscriptionPlanKey,
@@ -29,7 +27,8 @@ const PricingCard: React.FC<{
   isFeatured?: boolean;
   onSubscribe: () => void;
   disabled?: boolean;
-}> = ({ plan, price, credits, costPerCredit, features, isFeatured = false, onSubscribe, disabled }) => {
+  ctaLabel?: string;
+}> = ({ plan, price, credits, costPerCredit, features, isFeatured = false, onSubscribe, disabled, ctaLabel = 'Subscribe' }) => {
   return (
     <div
       className={`border rounded-xl p-8 flex flex-col transition-all duration-300 relative overflow-hidden ${
@@ -72,7 +71,7 @@ const PricingCard: React.FC<{
       </ul>
 
       <Button onClick={onSubscribe} variant={isFeatured ? 'primary' : 'secondary'} className="w-full mt-auto" disabled={disabled}>
-        Subscribe
+        {ctaLabel}
       </Button>
     </div>
   );
@@ -103,14 +102,8 @@ const AddOnCard: React.FC<{
 
 export default function PricingPage() {
   const router = useRouter();
-  const { user, authHydrated, billing, refreshBilling, ensureSession } = useAuth();
+  const { user, authHydrated, billing, refreshBilling, ensureSession, getAccessToken } = useAuth();
   const [checkoutLoading, setCheckoutLoading] = React.useState<string | null>(null);
-  const [upgradeConfirm, setUpgradeConfirm] = React.useState<{
-    fromPlan: SubscriptionPlanKey;
-    toPlan: SubscriptionPlanKey;
-    immediateChargeCents: number;
-    creditDifference: number;
-  } | null>(null);
 
   React.useEffect(() => {
     void refreshBilling();
@@ -131,6 +124,26 @@ export default function PricingPage() {
       ? billing.subscriptionTier
       : null;
 
+  async function openSubscriptionPortal() {
+    const token = await getAccessToken();
+    if (!token) {
+      router.push('/auth');
+      return;
+    }
+    const res = await fetch('/api/billing/portal', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert((body as { error?: string }).error ?? 'Could not open billing portal');
+      return;
+    }
+    const url = (body as { url?: string }).url;
+    if (url) window.location.href = url;
+  }
+
   async function startSubscriptionCheckout(planKey: SubscriptionPlanKey) {
     if (!user) {
       const restored = await ensureSession();
@@ -141,32 +154,25 @@ export default function PricingPage() {
     }
     setCheckoutLoading(`sub:${planKey}`);
     try {
+      if (currentActiveTier) {
+        await openSubscriptionPortal();
+        return;
+      }
+      const token = await getAccessToken();
+      if (!token) {
+        router.push('/auth');
+        return;
+      }
       const res = await fetch('/api/billing/checkout/subscription', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ planKey }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.error('Subscription checkout failed', res.status, body);
         alert((body as { error?: string }).error ?? 'Checkout failed');
-        return;
-      }
-      const needsConfirm = (body as { requiresUpgradeConfirmation?: boolean }).requiresUpgradeConfirmation;
-      if (needsConfirm) {
-        setUpgradeConfirm({
-          fromPlan: (body as { fromPlan: SubscriptionPlanKey }).fromPlan,
-          toPlan: (body as { toPlan: SubscriptionPlanKey }).toPlan,
-          immediateChargeCents: Number((body as { immediateChargeCents?: number }).immediateChargeCents ?? 0),
-          creditDifference: Number((body as { creditDifference?: number }).creditDifference ?? 0),
-        });
-        return;
-      }
-      const upgraded = (body as { upgraded?: boolean }).upgraded;
-      if (upgraded) {
-        await refreshBilling();
-        alert((body as { message?: string }).message ?? 'Subscription upgraded successfully.');
         return;
       }
       const url = (body as { url?: string }).url;
@@ -176,39 +182,24 @@ export default function PricingPage() {
     }
   }
 
-  async function confirmUpgrade() {
-    if (!upgradeConfirm) return;
-    setCheckoutLoading(`sub:${upgradeConfirm.toPlan}`);
-    try {
-      const res = await fetch('/api/billing/checkout/subscription', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ planKey: upgradeConfirm.toPlan, confirmUpgrade: true }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert((body as { error?: string }).error ?? 'Upgrade failed');
-        return;
-      }
-      setUpgradeConfirm(null);
-      await refreshBilling();
-      alert((body as { message?: string }).message ?? 'Subscription upgraded successfully.');
-    } finally {
-      setCheckoutLoading(null);
-    }
-  }
-
   async function startCreditPackCheckout(packKey: CreditPackKey) {
     if (!user) {
-      router.push('/auth');
-      return;
+      const restored = await ensureSession();
+      if (!restored) {
+        router.push('/auth');
+        return;
+      }
     }
     setCheckoutLoading(`pack:${packKey}`);
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        router.push('/auth');
+        return;
+      }
       const res = await fetch('/api/billing/checkout/credits', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         credentials: 'include',
         body: JSON.stringify({ packKey }),
       });
@@ -247,6 +238,7 @@ export default function PricingPage() {
             features={['Curated generation speed', 'HD quality downloads', 'Access to community styles']}
             onSubscribe={() => startSubscriptionCheckout('closet')}
             disabled={checkoutLoading !== null}
+            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
           />
           <PricingCard
             plan={PLAN_LABEL.studio}
@@ -257,6 +249,7 @@ export default function PricingPage() {
             isFeatured
             onSubscribe={() => startSubscriptionCheckout('studio')}
             disabled={checkoutLoading !== null}
+            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
           />
           <PricingCard
             plan={PLAN_LABEL.runway}
@@ -272,12 +265,18 @@ export default function PricingPage() {
             ]}
             onSubscribe={() => startSubscriptionCheckout('runway')}
             disabled={checkoutLoading !== null}
+            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
           />
         </div>
         {currentActiveTier && (
-          <p className="text-center text-xs text-charcoal-grey/60 -mt-8 mb-8">
-            Active plan: {PLAN_LABEL[currentActiveTier]}. Upgrades require explicit confirmation and keep your billing date unchanged.
-          </p>
+          <div className="text-center -mt-8 mb-8">
+            <p className="text-xs text-charcoal-grey/60">
+              Active plan: {PLAN_LABEL[currentActiveTier]}. Use Stripe Customer Portal to change plans or cancel.
+            </p>
+            <Button variant="secondary" className="mt-3" onClick={() => void openSubscriptionPortal()} disabled={checkoutLoading !== null}>
+              Manage Subscription
+            </Button>
+          </div>
         )}
 
         <p className="text-center text-charcoal-grey/80 mb-16">
@@ -345,30 +344,6 @@ export default function PricingPage() {
             </div>
           )}
         </div>
-        {upgradeConfirm && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 px-4">
-            <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
-              <h3 className="text-2xl font-heading font-bold text-charcoal-grey">Confirm Upgrade</h3>
-              <p className="mt-3 text-sm text-charcoal-grey/80">
-                You are moving from <strong>{PLAN_LABEL[upgradeConfirm.fromPlan]}</strong> to{' '}
-                <strong>{PLAN_LABEL[upgradeConfirm.toPlan]}</strong>.
-              </p>
-              <ul className="mt-4 space-y-2 text-sm text-charcoal-grey/80">
-                <li>Immediate Stripe proration charge: <strong>€{(upgradeConfirm.immediateChargeCents / 100).toFixed(2)}</strong></li>
-                <li>Immediate credit increase: <strong>+{upgradeConfirm.creditDifference}</strong> credits</li>
-                <li>Billing date: <strong>unchanged</strong></li>
-              </ul>
-              <div className="mt-6 flex justify-end gap-3">
-                <Button variant="secondary" onClick={() => setUpgradeConfirm(null)} disabled={checkoutLoading !== null}>
-                  Cancel
-                </Button>
-                <Button onClick={confirmUpgrade} disabled={checkoutLoading !== null}>
-                  Confirm Upgrade
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

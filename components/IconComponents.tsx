@@ -31,6 +31,12 @@ export const SparklesIcon: React.FC<{className?: string}> = ({ className }) => (
     </svg>
 );
 
+export const MailIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={`h-6 w-6 ${className}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+  </svg>
+);
+
 export const GoogleIcon: React.FC<{className?: string}> = ({ className }) => (
     <svg className={`w-5 h-5 ${className}`} aria-hidden="true" focusable="false" data-prefix="fab" data-icon="google" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
         <path fill="currentColor" d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 126 23.4 172.9 62.3l-66.5 64.6C305.5 102.6 268.9 96 248 96c-106.1 0-192 85.9-192 192s85.9 192 192 192c101.7 0 174.4-78.6 182.5-164.6H248V261.8h239.2z"></path>

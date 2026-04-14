@@ -8,8 +8,9 @@ import { GoogleIcon } from '@/components/IconComponents';
 
 const AuthForm: React.FC<{
   isLogin: boolean;
+  pending?: boolean;
   onSubmit: (e: React.FormEvent) => void;
-}> = ({ isLogin, onSubmit }) => (
+}> = ({ isLogin, pending = false, onSubmit }) => (
   <form onSubmit={onSubmit} className="space-y-6">
     <div>
       <label htmlFor="email" className="block text-sm font-medium text-charcoal-grey/90">Email Address</label>
@@ -25,8 +26,8 @@ const AuthForm: React.FC<{
       <label htmlFor="password"className="block text-sm font-medium text-charcoal-grey/90">Password</label>
       <input type="password" name="password" id="password" required className="mt-1 block w-full px-3 py-2 bg-warm-cream/50 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-dusty-rose focus:border-dusty-rose" autoComplete="current-password" />
     </div>
-    <Button type="submit" className="w-full">
-      {isLogin ? 'Login' : 'Sign Up'}
+    <Button type="submit" className="w-full" disabled={pending}>
+      {pending ? 'Please wait...' : isLogin ? 'Login' : 'Sign Up'}
     </Button>
   </form>
 );
@@ -34,7 +35,9 @@ const AuthForm: React.FC<{
 export default function AuthPage() {
   const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
-  const { login } = useAuth();
+  const { signInWithPassword, signUpWithPassword } = useAuth();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,22 +50,35 @@ export default function AuthPage() {
       email: target.email.value,
       name: isLogin ? target.email.value.split('@')[0] || 'Member' : target.name.value,
     };
-    login(user);
+    setPending(true);
+    setError(null);
     try {
-      const res = await fetch('/api/auth/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ email: user.email }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        console.error('[auth] session cookie failed', res.status, body);
+      if (isLogin) {
+        const result = await signInWithPassword({ email: user.email, password: (e.target as any).password.value });
+        if (!result.ok) {
+          setError(result.error ?? 'Login failed');
+          return;
+        }
+        router.push('/profile');
+      } else {
+        const result = await signUpWithPassword({
+          email: user.email,
+          password: (e.target as any).password.value,
+          fullName: user.name,
+        });
+        if (!result.ok) {
+          setError(result.message ?? 'Sign up failed');
+          return;
+        }
+        if (result.needsEmailVerification) {
+          router.push(`/verify-email?email=${encodeURIComponent(user.email)}`);
+          return;
+        }
+        router.push('/pricing');
       }
-    } catch (err) {
-      console.error('[auth] session cookie error', err);
+    } finally {
+      setPending(false);
     }
-    router.push(isLogin ? '/profile' : '/pricing');
   };
 
   return (
@@ -82,7 +98,8 @@ export default function AuthPage() {
           </button>
         </div>
 
-        <AuthForm isLogin={isLogin} onSubmit={handleSubmit} />
+        <AuthForm isLogin={isLogin} onSubmit={handleSubmit} pending={pending} />
+        {error && <p className="text-sm text-center text-red-600">{error}</p>}
 
         <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
@@ -94,7 +111,7 @@ export default function AuthPage() {
         </div>
 
         <div>
-            <button onClick={() => handleSubmit} className="w-full flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+            <button type="button" disabled={pending} className="w-full flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-60">
                 <GoogleIcon className="mr-2" />
                 Sign in with Google
             </button>

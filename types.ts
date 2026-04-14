@@ -21,6 +21,7 @@ export interface BillingSnapshot {
 }
 
 export interface User {
+  id: string;
   name: string;
   email: string;
 }
@@ -40,13 +41,19 @@ export interface AuthContextType {
   billing: BillingSnapshot;
   refreshBilling: () => Promise<void>;
   ensureSession: () => Promise<boolean>;
+  getAccessToken: () => Promise<string | null>;
   history: TryOnHistoryItem[];
   uploadedPersonImages: string[];
   uploadedOutfitImages: string[];
   favoriteOutfitImages: string[];
   imagesToRegenerate: { personImg: string; outfitImg: string } | null;
-  login: (user: User) => void;
-  logout: () => void;
+  signUpWithPassword: (params: { email: string; password: string; fullName?: string }) => Promise<{
+    ok: boolean;
+    message?: string;
+    needsEmailVerification?: boolean;
+  }>;
+  signInWithPassword: (params: { email: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
+  logout: () => Promise<void>;
   addHistoryItem: (item: Omit<TryOnHistoryItem, 'id' | 'createdAt'>) => void;
   deleteHistoryItem: (id: string) => void;
   setRegenerate: (personImg: string, outfitImg: string) => void;

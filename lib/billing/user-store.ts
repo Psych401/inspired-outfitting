@@ -21,20 +21,60 @@ function mapTierFromDb(raw: string | null | undefined): SubscriptionPlanKey | 'n
 }
 
 export function normalizeUserId(userId: string): string {
-  return userId.trim().toLowerCase();
+  return userId.trim();
 }
 
-async function ensureUserProfile(userId: string): Promise<void> {
+export async function ensureUserProfile(
+  userId: string,
+  profile?: { email?: string | null; fullName?: string | null; avatarUrl?: string | null }
+): Promise<void> {
   const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
-  const { error } = await supabase.from('app_users').upsert(
+  const email = profile?.email?.trim().toLowerCase() || null;
+  const { error } = await supabase
+    .from('profiles')
+    .upsert(
+      {
+        id,
+        email,
+        full_name: profile?.fullName ?? null,
+        avatar_url: profile?.avatarUrl ?? null,
+      },
+      { onConflict: 'id' }
+    );
+  if (error) throw new Error(`profiles upsert failed: ${error.message}`);
+
+  const { error: appUserErr } = await supabase.from('app_users').upsert(
     {
       id,
-      email: id,
+      email: email ?? id,
     },
     { onConflict: 'id' }
   );
-  if (error) throw new Error(`app_users upsert failed: ${error.message}`);
+  if (appUserErr) throw new Error(`app_users upsert failed: ${appUserErr.message}`);
+}
+
+export async function getProfile(userId: string): Promise<{
+  id: string;
+  email: string | null;
+  fullName: string | null;
+  avatarUrl: string | null;
+} | null> {
+  const supabase = getSupabaseServiceRoleClient();
+  const id = normalizeUserId(userId);
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id,email,full_name,avatar_url')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`profiles read failed: ${error.message}`);
+  if (!data) return null;
+  return {
+    id: data.id,
+    email: data.email ?? null,
+    fullName: data.full_name ?? null,
+    avatarUrl: data.avatar_url ?? null,
+  };
 }
 
 export async function getOrCreateUser(userId: string): Promise<UserBillingRecord> {

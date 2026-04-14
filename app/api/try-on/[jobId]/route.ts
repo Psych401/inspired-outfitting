@@ -7,8 +7,8 @@ export const runtime = 'nodejs';
 
 type RouteContext = { params: Promise<{ jobId: string }> };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
-  const auth = await requireSessionUser();
+export async function GET(request: NextRequest, context: RouteContext) {
+  const auth = await requireSessionUser(request);
   if (auth instanceof NextResponse) return auth;
 
   const { jobId } = await context.params;

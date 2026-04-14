@@ -18,6 +18,7 @@ export default function ProfilePage() {
     authHydrated,
     billing,
     refreshBilling,
+    getAccessToken,
     history,
     logout,
     deleteHistoryItem,
@@ -48,10 +49,30 @@ export default function ProfilePage() {
     );
   }
 
-  const handleLogout = () => {
-    logout();
-    router.push('/');
+  async function openSubscriptionPortal() {
+    const token = await getAccessToken();
+    if (!token) {
+      router.push('/auth');
+      return;
+    }
+    const res = await fetch('/api/billing/portal', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert((body as { error?: string }).error ?? 'Could not open Stripe portal');
+      return;
+    }
+    const url = (body as { url?: string }).url;
+    if (url) window.location.href = url;
   }
+
+  const handleLogout = async () => {
+    await logout();
+    router.push('/');
+  };
 
   const handleRegenerate = (personImg: string, outfitImg: string) => {
     setRegenerate(personImg, outfitImg);
@@ -79,6 +100,11 @@ export default function ProfilePage() {
           <Button onClick={() => router.push('/pricing')} variant="secondary" className="w-full text-base py-2">
             Change Plan
           </Button>
+          {billing.subscriptionTier !== 'none' && (
+            <Button onClick={() => void openSubscriptionPortal()} variant="secondary" className="w-full text-base py-2 mt-3">
+              Manage Subscription
+            </Button>
+          )}
            <button onClick={handleLogout} className="w-full text-center text-gray-500 mt-4 hover:text-dusty-rose">
             Logout
           </button>

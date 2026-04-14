@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth/require-user';
 import { getStripe } from '@/lib/billing/stripe-client';
 import { assertCreditPackKey, getCreditPackStripePriceId } from '@/lib/billing/products';
-import { getOrCreateUser, setStripeCustomer } from '@/lib/billing/user-store';
+import { ensureUserProfile, getOrCreateUser, setStripeCustomer } from '@/lib/billing/user-store';
 import { canPurchaseCreditPacks } from '@/lib/billing/subscription';
 import { checkBillingCheckoutLimit } from '@/lib/billing/rate-limit';
 import { auditLog } from '@/lib/billing/audit';
@@ -23,8 +23,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Stripe is not configured' }, { status: 503 });
   }
 
-  const auth = await requireSessionUser();
+  const auth = await requireSessionUser(request);
   if (auth instanceof NextResponse) return auth;
+  await ensureUserProfile(auth.sub, { email: auth.email, fullName: auth.fullName, avatarUrl: auth.avatarUrl });
 
   const rl = checkBillingCheckoutLimit(auth.sub);
   if (!rl.allowed) {
@@ -74,7 +75,7 @@ export async function POST(request: NextRequest) {
   let customerId = billing.stripeCustomerId;
   if (!customerId) {
     const c = await stripe.customers.create({
-      email: auth.sub,
+      email: auth.email,
       metadata: { userId: auth.sub },
     });
     customerId = c.id;

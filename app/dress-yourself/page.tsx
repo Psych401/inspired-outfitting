@@ -199,6 +199,7 @@ export default function DressYourselfPage() {
     authHydrated,
     user,
     ensureSession,
+    getAccessToken,
     refreshBilling,
     addHistoryItem,
     imagesToRegenerate,
@@ -325,6 +326,12 @@ export default function DressYourselfPage() {
         return;
       }
     }
+    const token = await getAccessToken();
+    if (!token) {
+      setError('Please sign in to use try-on.');
+      router.push('/auth');
+      return;
+    }
 
     setGenPhase('submitting');
     setError(null);
@@ -364,6 +371,7 @@ export default function DressYourselfPage() {
         method: 'POST',
         body: formData,
         credentials: 'include',
+        headers: { Authorization: `Bearer ${token}` },
       });
       const submitBody = await submitRes.json().catch(() => ({}));
       if (!submitRes.ok) {
@@ -391,7 +399,10 @@ export default function DressYourselfPage() {
       const timeoutMs = 240000;
       const pollStarted = Date.now();
       while (Date.now() - pollStarted < timeoutMs) {
-        const pollRes = await fetch(`/api/try-on/${jobId}`, { cache: 'no-store' });
+        const pollRes = await fetch(`/api/try-on/${jobId}`, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${token}` },
+        });
         const pollBody = await pollRes.json().catch(() => ({}));
         if (!pollRes.ok) {
           console.error('[try-on][client] poll failed', {
@@ -448,6 +459,7 @@ export default function DressYourselfPage() {
     authHydrated,
     user,
     ensureSession,
+    getAccessToken,
     router,
     refreshBilling,
   ]);

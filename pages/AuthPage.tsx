@@ -34,9 +34,9 @@ const AuthForm: React.FC<{
 
 const AuthPage: React.FC<AuthPageProps> = ({ navigate }) => {
   const [isLogin, setIsLogin] = useState(true);
-  const { login } = useAuth();
+  const { signInWithPassword, signUpWithPassword } = useAuth();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const target = e.target as typeof e.target & {
         email: { value: string };
@@ -47,8 +47,14 @@ const AuthPage: React.FC<AuthPageProps> = ({ navigate }) => {
       email: target.email.value,
       name: isLogin ? target.email.value.split('@')[0] || 'Member' : target.name.value,
     };
-    login(user);
-    navigate('profile');
+    const password = (e.target as typeof e.target & { password: { value: string } }).password.value;
+    if (isLogin) {
+      const out = await signInWithPassword({ email: user.email, password });
+      if (out.ok) navigate('profile');
+      return;
+    }
+    const out = await signUpWithPassword({ email: user.email, password, fullName: user.name });
+    if (out.ok && !out.message) navigate('pricing');
   };
 
   return (

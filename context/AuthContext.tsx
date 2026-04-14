@@ -1,9 +1,11 @@
 'use client';
 
 import React, { createContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { AuthContextType, User, TryOnHistoryItem, BillingSnapshot, BillingTier, BillingSubscriptionStatus } from '../types';
 import { normalizeSubscriptionPlanKey } from '@/lib/billing/plan-keys';
 import { auditLog } from '@/lib/billing/audit';
+import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -42,12 +44,39 @@ function parseBillingPayload(data: Record<string, unknown>): BillingSnapshot {
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [authHydrated, setAuthHydrated] = useState(false);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [billing, setBilling] = useState<BillingSnapshot>(emptyBilling);
   const [history, setHistory] = useState<TryOnHistoryItem[]>([]);
   const [uploadedPersonImages, setUploadedPersonImages] = useState<string[]>([]);
   const [uploadedOutfitImages, setUploadedOutfitImages] = useState<string[]>([]);
   const [favoriteOutfitImages, setFavoriteOutfitImages] = useState<string[]>([]);
   const [imagesToRegenerate, setImagesToRegenerate] = useState<{ personImg: string; outfitImg: string } | null>(null);
+
+  const authHeaders = useCallback((): HeadersInit => {
+    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+  }, [accessToken]);
+
+  const loadMe = useCallback(
+    async (token?: string | null) => {
+      const hdrs: HeadersInit = token ? { Authorization: `Bearer ${token}` } : authHeaders();
+      if (!hdrs || Object.keys(hdrs).length === 0) return false;
+      const res = await fetch('/api/me', { credentials: 'include', cache: 'no-store', headers: hdrs });
+      if (!res.ok) return false;
+      const data = (await res.json()) as {
+        user?: { id?: string; email?: string; fullName?: string | null };
+        billing?: Record<string, unknown>;
+      };
+      if (!data.user?.id || !data.user?.email) return false;
+      setUser({
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.fullName?.trim() || data.user.email.split('@')[0] || 'Member',
+      });
+      if (data.billing) setBilling(parseBillingPayload(data.billing));
+      return true;
+    },
+    [authHeaders]
+  );
 
   const refreshBilling = useCallback(async () => {
     if (!user) {
@@ -56,7 +85,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     setBilling((b) => ({ ...b, loading: true }));
     try {
-      const res = await fetch('/api/billing/me', { credentials: 'include', cache: 'no-store' });
+      const res = await fetch('/api/billing/me', { credentials: 'include', cache: 'no-store', headers: authHeaders() });
       if (!res.ok) {
         setBilling(emptyBilling());
         return;
@@ -66,49 +95,106 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch {
       setBilling(emptyBilling());
     }
-  }, [user]);
+  }, [user, authHeaders]);
 
   const ensureSession = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
-      if (!res.ok) return false;
-      const data = (await res.json()) as { authenticated?: boolean; userId?: string };
-      if (data.authenticated && typeof data.userId === 'string' && data.userId) {
-        const email = data.userId;
-        setUser((prev) => prev ?? { email, name: email.split('@')[0] || 'Member' });
-        auditLog('post_checkout_session_restored', { userId: email });
-        return true;
-      }
+      const supabase = getSupabaseBrowserClient();
+      const { data, error } = await supabase.auth.getSession();
+      if (error) return false;
+      const session = data.session;
+      if (!session?.access_token) return false;
+      setAccessToken(session.access_token);
+      const ok = await loadMe(session.access_token);
+      if (ok) auditLog('post_checkout_session_restored', { userId: session.user.id });
+      return ok;
+    } catch {
       setUser(null);
       return false;
-    } catch {
-      return false;
     }
-  }, []);
+  }, [loadMe]);
+
+  const getAccessToken = useCallback(async (): Promise<string | null> => {
+    if (accessToken) return accessToken;
+    const ok = await ensureSession();
+    if (!ok) return null;
+    return getSupabaseBrowserClient().auth.getSession().then(({ data }) => data.session?.access_token ?? null);
+  }, [accessToken, ensureSession]);
 
   /** Restore client user state from the httpOnly session cookie (e.g. return from Stripe checkout). */
   useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
     let cancelled = false;
     void (async () => {
       await ensureSession();
       if (!cancelled) setAuthHydrated(true);
     })();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session: Session | null) => {
+      if (session?.access_token) {
+        setAccessToken(session.access_token);
+        await loadMe(session.access_token);
+      } else {
+        setAccessToken(null);
+        setUser(null);
+        setBilling(emptyBilling());
+      }
+      if (!cancelled) setAuthHydrated(true);
+    });
     return () => {
       cancelled = true;
+      subscription.unsubscribe();
     };
-  }, [ensureSession]);
+  }, [ensureSession, loadMe]);
 
   useEffect(() => {
     void refreshBilling();
   }, [refreshBilling]);
 
-  const login = useCallback((userData: User) => {
-    setUser(userData);
-  }, []);
+  const signUpWithPassword = useCallback(async (params: { email: string; password: string; fullName?: string }) => {
+    const supabase = getSupabaseBrowserClient();
+    const origin =
+      typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_SITE_URL ?? '').replace(/\/$/, '');
+    const emailRedirectTo = origin ? `${origin}/pricing` : undefined;
+    const { data, error } = await supabase.auth.signUp({
+      email: params.email,
+      password: params.password,
+      options: {
+        data: { full_name: params.fullName ?? '' },
+        ...(emailRedirectTo ? { emailRedirectTo } : {}),
+      },
+    });
+    if (error) return { ok: false, message: error.message };
+    const token = data.session?.access_token ?? null;
+    if (token) {
+      setAccessToken(token);
+      await loadMe(token);
+    }
+    const needsEmailVerification = !data.session;
+    return {
+      ok: true,
+      needsEmailVerification,
+    };
+  }, [loadMe]);
 
-  const logout = useCallback(() => {
-    void fetch('/api/auth/session', { method: 'DELETE', credentials: 'include' });
+  const signInWithPassword = useCallback(async (params: { email: string; password: string }) => {
+    const supabase = getSupabaseBrowserClient();
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: params.email,
+      password: params.password,
+    });
+    if (error || !data.session) return { ok: false, error: error?.message ?? 'Sign in failed' };
+    setAccessToken(data.session.access_token);
+    await loadMe(data.session.access_token);
+    return { ok: true };
+  }, [loadMe]);
+
+  const logout = useCallback(async () => {
+    const supabase = getSupabaseBrowserClient();
+    await supabase.auth.signOut();
     setUser(null);
+    setAccessToken(null);
     setBilling(emptyBilling());
     setHistory([]);
     setUploadedPersonImages([]);
@@ -168,12 +254,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     billing,
     refreshBilling,
     ensureSession,
+    getAccessToken,
     history,
     uploadedPersonImages,
     uploadedOutfitImages,
     favoriteOutfitImages,
     imagesToRegenerate,
-    login,
+    signUpWithPassword,
+    signInWithPassword,
     logout,
     addHistoryItem,
     deleteHistoryItem,
