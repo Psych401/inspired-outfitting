@@ -29,6 +29,10 @@ function isUnlimitedUser(userId: string | undefined): boolean {
   return getUnlimitedUsers().has(userId.trim().toLowerCase());
 }
 
+function isCreditCheckBypassEnabled(): boolean {
+  return process.env.NODE_ENV !== 'production' && process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true';
+}
+
 export async function getBalance(userId: string): Promise<number> {
   if (isUnlimitedUser(userId)) return Number.MAX_SAFE_INTEGER;
   return (await getOrCreateUser(userId)).credits;
@@ -41,7 +45,7 @@ export async function tryDebitCredits(
   userId: string | undefined,
   cost: number
 ): Promise<{ ok: true; remaining: number } | { ok: false; remaining: number }> {
-  if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true') {
+  if (isCreditCheckBypassEnabled()) {
     return { ok: true, remaining: 999999 };
   }
   if (isUnlimitedUser(userId)) {
@@ -75,7 +79,7 @@ export async function tryDebitCredits(
 }
 
 export async function hasMinimumCredits(userId: string | undefined, cost: number): Promise<boolean> {
-  if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true') return true;
+  if (isCreditCheckBypassEnabled()) return true;
   if (isUnlimitedUser(userId)) return true;
   if (!userId) return false;
   return (await getBalance(userId)) >= cost;
@@ -87,7 +91,7 @@ export async function refundCredits(
   amount: number,
   opts?: { reason?: string; sourceKey?: string; jobId?: string }
 ): Promise<void> {
-  if (process.env.TRY_ON_SKIP_CREDIT_CHECK === 'true' || isUnlimitedUser(userId) || !userId) return;
+  if (isCreditCheckBypassEnabled() || isUnlimitedUser(userId) || !userId) return;
   const uid = normalizeUserId(userId);
   const supabase = getSupabaseServiceRoleClient();
   const defaultCredits = defaultCreditsForNewUser();

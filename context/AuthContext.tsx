@@ -3,6 +3,7 @@
 import React, { createContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { AuthContextType, User, TryOnHistoryItem, BillingSnapshot, BillingTier, BillingSubscriptionStatus } from '../types';
 import { normalizeSubscriptionPlanKey } from '@/lib/billing/plan-keys';
+import { auditLog } from '@/lib/billing/audit';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -40,6 +41,7 @@ function parseBillingPayload(data: Record<string, unknown>): BillingSnapshot {
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [authHydrated, setAuthHydrated] = useState(false);
   const [billing, setBilling] = useState<BillingSnapshot>(emptyBilling);
   const [history, setHistory] = useState<TryOnHistoryItem[]>([]);
   const [uploadedPersonImages, setUploadedPersonImages] = useState<string[]>([]);
@@ -66,26 +68,35 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [user]);
 
+  const ensureSession = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+      if (!res.ok) return false;
+      const data = (await res.json()) as { authenticated?: boolean; userId?: string };
+      if (data.authenticated && typeof data.userId === 'string' && data.userId) {
+        const email = data.userId;
+        setUser((prev) => prev ?? { email, name: email.split('@')[0] || 'Member' });
+        auditLog('post_checkout_session_restored', { userId: email });
+        return true;
+      }
+      setUser(null);
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
+
   /** Restore client user state from the httpOnly session cookie (e.g. return from Stripe checkout). */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        const res = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { authenticated?: boolean; userId?: string };
-        if (data.authenticated && typeof data.userId === 'string' && data.userId) {
-          const email = data.userId;
-          setUser({ email, name: email.split('@')[0] || 'Member' });
-        }
-      } catch {
-        /* ignore */
-      }
+      await ensureSession();
+      if (!cancelled) setAuthHydrated(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ensureSession]);
 
   useEffect(() => {
     void refreshBilling();
@@ -152,9 +163,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const value = {
     isAuthenticated: !!user,
+    authHydrated,
     user,
     billing,
     refreshBilling,
+    ensureSession,
     history,
     uploadedPersonImages,
     uploadedOutfitImages,

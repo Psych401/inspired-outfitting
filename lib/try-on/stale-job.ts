@@ -1,12 +1,12 @@
 /**
  * Marks in-flight jobs as failed if they exceed a wall-clock limit (avoids infinite client polling).
- * Default 4m — above Modal GPU hard timeout (180s) so stuck webhooks / multi-instance mismatches fail fast on the app side.
+ * Default 2m — keeps UX responsive while still allowing normal GPU completion.
  */
 
 import { getJobStore } from './job-store';
 import type { TryOnJobRecord } from './types';
 
-const DEFAULT_STALE_MS = 240_000; // 4 minutes
+const DEFAULT_STALE_MS = 120_000; // 2 minutes
 
 export function getStaleJobMs(): number {
   const n = Number(process.env.TRY_ON_STALE_JOB_MS ?? DEFAULT_STALE_MS);

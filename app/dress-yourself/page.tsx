@@ -196,7 +196,9 @@ export default function DressYourselfPage() {
   const router = useRouter();
   const {
     isAuthenticated,
+    authHydrated,
     user,
+    ensureSession,
     refreshBilling,
     addHistoryItem,
     imagesToRegenerate,
@@ -316,9 +318,12 @@ export default function DressYourselfPage() {
     }
 
     if (!isAuthenticated || !user?.email) {
-      setError('Please sign in to use try-on.');
-      setTimeout(() => router.push('/auth'), 2000);
-      return;
+      const restored = await ensureSession();
+      if (!restored) {
+        setError('Please sign in to use try-on.');
+        router.push('/auth');
+        return;
+      }
     }
 
     setGenPhase('submitting');
@@ -440,7 +445,9 @@ export default function DressYourselfPage() {
     garmentPhotoType,
     hasInvalidOnePiecePhotoType,
     isAuthenticated,
+    authHydrated,
     user,
+    ensureSession,
     router,
     refreshBilling,
   ]);
@@ -630,7 +637,7 @@ export default function DressYourselfPage() {
         </div>
       </div>
       
-       {!isAuthenticated && (
+       {!isAuthenticated && authHydrated && (
         <div className="mt-12 bg-soft-blush p-8 rounded-lg text-center">
           <h3 className="text-2xl font-heading mb-2">Unlock Unlimited Try-Ons</h3>
           <p className="mb-4">Sign up or log in to start generating your styles.</p>

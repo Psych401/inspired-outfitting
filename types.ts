@@ -35,9 +35,11 @@ export interface TryOnHistoryItem {
 
 export interface AuthContextType {
   isAuthenticated: boolean;
+  authHydrated: boolean;
   user: User | null;
   billing: BillingSnapshot;
   refreshBilling: () => Promise<void>;
+  ensureSession: () => Promise<boolean>;
   history: TryOnHistoryItem[];
   uploadedPersonImages: string[];
   uploadedOutfitImages: string[];

@@ -13,12 +13,31 @@ const RegenerateIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { user, billing, refreshBilling, history, logout, deleteHistoryItem, setRegenerate, uploadedPersonImages, uploadedOutfitImages } =
+  const {
+    user,
+    authHydrated,
+    billing,
+    refreshBilling,
+    history,
+    logout,
+    deleteHistoryItem,
+    setRegenerate,
+    uploadedPersonImages,
+    uploadedOutfitImages,
+  } =
     useAuth();
 
   useEffect(() => {
     void refreshBilling();
   }, [refreshBilling]);
+
+  if (!authHydrated) {
+    return (
+      <div className="container mx-auto px-6 py-24 text-center">
+        <h1 className="text-2xl">Restoring your session...</h1>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

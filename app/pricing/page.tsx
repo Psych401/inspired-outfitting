@@ -11,7 +11,9 @@ import {
   PACK_LABEL,
   PACK_PRICE_EUR,
   PLAN_LABEL,
+  comparePlanTier,
   packCredits,
+  subscriptionCreditDifference,
   subscriptionCreditsForPlan,
   type CreditPackKey,
   type SubscriptionPlanKey,
@@ -101,8 +103,14 @@ const AddOnCard: React.FC<{
 
 export default function PricingPage() {
   const router = useRouter();
-  const { user, billing, refreshBilling } = useAuth();
+  const { user, authHydrated, billing, refreshBilling, ensureSession } = useAuth();
   const [checkoutLoading, setCheckoutLoading] = React.useState<string | null>(null);
+  const [upgradeConfirm, setUpgradeConfirm] = React.useState<{
+    fromPlan: SubscriptionPlanKey;
+    toPlan: SubscriptionPlanKey;
+    immediateChargeCents: number;
+    creditDifference: number;
+  } | null>(null);
 
   React.useEffect(() => {
     void refreshBilling();
@@ -115,10 +123,21 @@ export default function PricingPage() {
     !!user &&
     canPurchaseCreditPacks(billing.subscriptionStatus as SubscriptionStatus, tierForPacks);
 
+  const currentActiveTier: SubscriptionPlanKey | null =
+    billing.subscriptionTier !== 'none' &&
+    (billing.subscriptionStatus === 'active' ||
+      billing.subscriptionStatus === 'trialing' ||
+      billing.subscriptionStatus === 'past_due')
+      ? billing.subscriptionTier
+      : null;
+
   async function startSubscriptionCheckout(planKey: SubscriptionPlanKey) {
     if (!user) {
-      router.push('/auth');
-      return;
+      const restored = await ensureSession();
+      if (!restored) {
+        router.push('/auth');
+        return;
+      }
     }
     setCheckoutLoading(`sub:${planKey}`);
     try {
@@ -134,8 +153,47 @@ export default function PricingPage() {
         alert((body as { error?: string }).error ?? 'Checkout failed');
         return;
       }
+      const needsConfirm = (body as { requiresUpgradeConfirmation?: boolean }).requiresUpgradeConfirmation;
+      if (needsConfirm) {
+        setUpgradeConfirm({
+          fromPlan: (body as { fromPlan: SubscriptionPlanKey }).fromPlan,
+          toPlan: (body as { toPlan: SubscriptionPlanKey }).toPlan,
+          immediateChargeCents: Number((body as { immediateChargeCents?: number }).immediateChargeCents ?? 0),
+          creditDifference: Number((body as { creditDifference?: number }).creditDifference ?? 0),
+        });
+        return;
+      }
+      const upgraded = (body as { upgraded?: boolean }).upgraded;
+      if (upgraded) {
+        await refreshBilling();
+        alert((body as { message?: string }).message ?? 'Subscription upgraded successfully.');
+        return;
+      }
       const url = (body as { url?: string }).url;
       if (url) window.location.href = url;
+    } finally {
+      setCheckoutLoading(null);
+    }
+  }
+
+  async function confirmUpgrade() {
+    if (!upgradeConfirm) return;
+    setCheckoutLoading(`sub:${upgradeConfirm.toPlan}`);
+    try {
+      const res = await fetch('/api/billing/checkout/subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ planKey: upgradeConfirm.toPlan, confirmUpgrade: true }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert((body as { error?: string }).error ?? 'Upgrade failed');
+        return;
+      }
+      setUpgradeConfirm(null);
+      await refreshBilling();
+      alert((body as { message?: string }).message ?? 'Subscription upgraded successfully.');
     } finally {
       setCheckoutLoading(null);
     }
@@ -216,6 +274,11 @@ export default function PricingPage() {
             disabled={checkoutLoading !== null}
           />
         </div>
+        {currentActiveTier && (
+          <p className="text-center text-xs text-charcoal-grey/60 -mt-8 mb-8">
+            Active plan: {PLAN_LABEL[currentActiveTier]}. Upgrades require explicit confirmation and keep your billing date unchanged.
+          </p>
+        )}
 
         <p className="text-center text-charcoal-grey/80 mb-16">
           <Link href="/dress-yourself" className="text-dusty-rose font-semibold underline underline-offset-4 hover:text-dusty-rose/80">
@@ -268,7 +331,7 @@ export default function PricingPage() {
                 View plans
               </Button>
             </div>
-          ) : (
+          ) : authHydrated ? (
             <div className="max-w-3xl mx-auto text-center p-8 border-2 border-dashed border-gray-300 rounded-xl">
               <h3 className="text-xl font-semibold text-charcoal-grey/60">Credit packs</h3>
               <p className="text-charcoal-grey/50 mt-2">Sign in and subscribe to purchase one-time credit packs.</p>
@@ -276,8 +339,36 @@ export default function PricingPage() {
                 Login
               </Button>
             </div>
+          ) : (
+            <div className="max-w-3xl mx-auto text-center p-8 border-2 border-dashed border-gray-300 rounded-xl">
+              <h3 className="text-xl font-semibold text-charcoal-grey/60">Loading account status...</h3>
+            </div>
           )}
         </div>
+        {upgradeConfirm && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 px-4">
+            <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+              <h3 className="text-2xl font-heading font-bold text-charcoal-grey">Confirm Upgrade</h3>
+              <p className="mt-3 text-sm text-charcoal-grey/80">
+                You are moving from <strong>{PLAN_LABEL[upgradeConfirm.fromPlan]}</strong> to{' '}
+                <strong>{PLAN_LABEL[upgradeConfirm.toPlan]}</strong>.
+              </p>
+              <ul className="mt-4 space-y-2 text-sm text-charcoal-grey/80">
+                <li>Immediate Stripe proration charge: <strong>€{(upgradeConfirm.immediateChargeCents / 100).toFixed(2)}</strong></li>
+                <li>Immediate credit increase: <strong>+{upgradeConfirm.creditDifference}</strong> credits</li>
+                <li>Billing date: <strong>unchanged</strong></li>
+              </ul>
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="secondary" onClick={() => setUpgradeConfirm(null)} disabled={checkoutLoading !== null}>
+                  Cancel
+                </Button>
+                <Button onClick={confirmUpgrade} disabled={checkoutLoading !== null}>
+                  Confirm Upgrade
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

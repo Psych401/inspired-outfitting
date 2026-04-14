@@ -1,6 +1,12 @@
 import type Stripe from 'stripe';
 import { getStripe } from './stripe-client';
-import { assertCreditPackKey, packCredits, subscriptionCreditsForPlan, type SubscriptionPlanKey } from './products';
+import {
+  assertCreditPackKey,
+  packCredits,
+  subscriptionCreditDifference,
+  subscriptionCreditsForPlan,
+  type SubscriptionPlanKey,
+} from './products';
 import { normalizeSubscriptionPlanKey } from './plan-keys';
 import {
   getUser,
@@ -14,6 +20,8 @@ import { insertStripeEventIfNew } from './stripe-events';
 import {
   sourceKeyForInvoiceGrant,
   sourceKeyForPackCheckoutGrant,
+  sourceKeyForSubscriptionCheckoutGrant,
+  sourceKeyForSubscriptionUpgradeGrant,
 } from './grant-idempotency';
 import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
 
@@ -44,17 +52,17 @@ function mapStripeSubStatus(status: Stripe.Subscription.Status): SubscriptionSta
 /** Adds credits via `app_grant_credits` (balance += amount); does not replace the balance. */
 async function grantSubscriptionCredits(
   userId: string,
+  amount: number,
   planKey: SubscriptionPlanKey,
   stripeEventId: string,
   reason: string,
   sourceKey: string
 ): Promise<boolean> {
-  const n = subscriptionCreditsForPlan(planKey);
   const supabase = getSupabaseServiceRoleClient();
   const uid = normalizeUserId(userId);
   const { error, data } = await supabase.rpc('app_grant_credits', {
     p_user_id: uid,
-    p_amount: n,
+    p_amount: amount,
     p_reason: reason,
     p_source_key: sourceKey,
     p_stripe_event_id: stripeEventId,
@@ -66,12 +74,29 @@ async function grantSubscriptionCredits(
   const row = Array.isArray(data) ? data[0] : data;
   auditLog('credits_granted', {
     userId: uid,
-    amount: n,
+    amount,
     reason,
     planKey,
     remaining: Number(row?.balance ?? 0),
   });
   return true;
+}
+
+async function grantSubscriptionCreditsForPlan(
+  userId: string,
+  planKey: SubscriptionPlanKey,
+  stripeEventId: string,
+  reason: string,
+  sourceKey: string
+): Promise<boolean> {
+  return grantSubscriptionCredits(
+    userId,
+    subscriptionCreditsForPlan(planKey),
+    planKey,
+    stripeEventId,
+    reason,
+    sourceKey
+  );
 }
 
 export async function processStripeEvent(event: Stripe.Event): Promise<void> {
@@ -118,6 +143,28 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             stripeSubscriptionId: subId,
             stripeCustomerId: customerId,
           });
+          const granted = await grantSubscriptionCreditsForPlan(
+            userId,
+            planKey,
+            event.id,
+            'subscription_checkout',
+            sourceKeyForSubscriptionCheckoutGrant(session.id)
+          );
+          if (!granted) {
+            auditLog('subscription_grant_duplicate_ignored', {
+              userId,
+              planKey,
+              stripeEventId: event.id,
+              stripeCheckoutSessionId: session.id,
+            });
+          } else {
+            auditLog('subscription_created', {
+              userId,
+              planKey,
+              stripeEventId: event.id,
+              stripeCheckoutSessionId: session.id,
+            });
+          }
           auditLog('subscription_status_changed', {
             userId,
             status: 'active',
@@ -183,14 +230,71 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         if (!planKey) break;
 
         const br = invoice.billing_reason;
-        if (br === 'subscription_create' || br === 'subscription_cycle' || br === 'subscription_update') {
-          await grantSubscriptionCredits(
+        if (br === 'subscription_cycle') {
+          const granted = await grantSubscriptionCreditsForPlan(
             userId,
             planKey,
             event.id,
             `invoice_paid:${br}`,
             sourceKeyForInvoiceGrant(invoice.id)
           );
+          if (!granted) {
+            auditLog('subscription_grant_duplicate_ignored', {
+              userId,
+              planKey,
+              stripeEventId: event.id,
+              invoiceId: invoice.id,
+              billingReason: br,
+            });
+          }
+        } else if (br === 'subscription_update') {
+          const upgradeFromRaw = sub.metadata?.upgradeFromPlanKey;
+          const upgradeToRaw = sub.metadata?.upgradeToPlanKey;
+          const upgradeInvoiceId = sub.metadata?.upgradeInvoiceId;
+          const upgradeFrom = normalizeSubscriptionPlanKey(upgradeFromRaw);
+          const upgradeTo = normalizeSubscriptionPlanKey(upgradeToRaw);
+          const shouldApplyUpgradeDiff =
+            upgradeFrom !== null &&
+            upgradeTo !== null &&
+            upgradeTo === planKey &&
+            (upgradeInvoiceId === invoice.id || !upgradeInvoiceId);
+          if (!shouldApplyUpgradeDiff) break;
+          const diff = subscriptionCreditDifference(upgradeFrom, upgradeTo);
+          if (diff <= 0) break;
+          const granted = await grantSubscriptionCredits(
+            userId,
+            diff,
+            planKey,
+            event.id,
+            'subscription_upgrade',
+            sourceKeyForSubscriptionUpgradeGrant(invoice.id)
+          );
+          if (!granted) {
+            auditLog('subscription_upgrade_duplicate_ignored', {
+              userId,
+              fromPlan: upgradeFrom,
+              toPlan: upgradeTo,
+              stripeEventId: event.id,
+              invoiceId: invoice.id,
+            });
+          } else {
+            auditLog('subscription_upgraded', {
+              userId,
+              fromPlan: upgradeFrom,
+              toPlan: upgradeTo,
+              creditDifference: diff,
+              stripeEventId: event.id,
+              invoiceId: invoice.id,
+            });
+          }
+          await stripe.subscriptions.update(sub.id, {
+            metadata: {
+              ...sub.metadata,
+              upgradeFromPlanKey: '',
+              upgradeToPlanKey: '',
+              upgradeInvoiceId: '',
+            },
+          });
         }
         break;
       }

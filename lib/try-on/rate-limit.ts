@@ -4,7 +4,7 @@
  */
 
 const WINDOW_MS = 60_000;
-const MAX_REQUESTS = Number(process.env.TRY_ON_RATE_LIMIT_PER_MINUTE ?? 20);
+const MAX_REQUESTS = Number(process.env.TRY_ON_RATE_LIMIT_PER_MINUTE ?? 5);
 
 type Bucket = { count: number; windowStart: number };
 

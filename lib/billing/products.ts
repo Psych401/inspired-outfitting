@@ -81,6 +81,16 @@ export function subscriptionCreditsForPlan(planKey: SubscriptionPlanKey): number
   return SUBSCRIPTION_PLANS[planKey].creditsPerPeriod;
 }
 
+const PLAN_ORDER: SubscriptionPlanKey[] = ['closet', 'studio', 'runway'];
+
+export function comparePlanTier(a: SubscriptionPlanKey, b: SubscriptionPlanKey): number {
+  return PLAN_ORDER.indexOf(a) - PLAN_ORDER.indexOf(b);
+}
+
+export function subscriptionCreditDifference(from: SubscriptionPlanKey, to: SubscriptionPlanKey): number {
+  return subscriptionCreditsForPlan(to) - subscriptionCreditsForPlan(from);
+}
+
 export function packCredits(packKey: CreditPackKey): number {
   return CREDIT_PACKS[packKey].credits;
 }

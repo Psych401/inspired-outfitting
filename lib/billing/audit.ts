@@ -4,6 +4,12 @@
 
 type AuditEvent =
   | 'checkout_session_created'
+  | 'subscription_created'
+  | 'subscription_upgraded'
+  | 'subscription_upgrade_confirmed'
+  | 'subscription_upgrade_duplicate_ignored'
+  | 'subscription_grant_duplicate_ignored'
+  | 'post_checkout_session_restored'
   | 'stripe_webhook_received'
   | 'stripe_event_processed'
   | 'stripe_event_duplicate_ignored'
