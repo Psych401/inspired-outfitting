@@ -8,7 +8,9 @@ export type BillingSubscriptionStatus =
   | 'past_due'
   | 'canceled'
   | 'trialing'
-  | 'unpaid';
+  | 'unpaid'
+  | 'payment_action_required'
+  | 'invoice_finalization_failed';
 
 export type BillingTier = 'closet' | 'studio' | 'runway' | 'none';
 

@@ -144,6 +144,16 @@ export default function PricingPage() {
     if (url) window.location.href = url;
   }
 
+  function planCtaLabel(planKey: SubscriptionPlanKey): string {
+    if (!currentActiveTier) return 'Subscribe';
+    if (currentActiveTier === planKey) return 'Subscribed';
+    return 'Change subscription';
+  }
+
+  function planCtaDisabled(planKey: SubscriptionPlanKey): boolean {
+    return checkoutLoading !== null || (currentActiveTier !== null && currentActiveTier === planKey);
+  }
+
   async function startSubscriptionCheckout(planKey: SubscriptionPlanKey) {
     if (!user) {
       const restored = await ensureSession();
@@ -155,6 +165,7 @@ export default function PricingPage() {
     setCheckoutLoading(`sub:${planKey}`);
     try {
       if (currentActiveTier) {
+        if (currentActiveTier === planKey) return;
         await openSubscriptionPortal();
         return;
       }
@@ -237,8 +248,8 @@ export default function PricingPage() {
             costPerCredit="~€0.12"
             features={['Curated generation speed', 'HD quality downloads', 'Access to community styles']}
             onSubscribe={() => startSubscriptionCheckout('closet')}
-            disabled={checkoutLoading !== null}
-            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
+            disabled={planCtaDisabled('closet')}
+            ctaLabel={planCtaLabel('closet')}
           />
           <PricingCard
             plan={PLAN_LABEL.studio}
@@ -248,8 +259,8 @@ export default function PricingPage() {
             features={['Fast generation speed', '4K Ultra-HD downloads', 'Priority support', 'Private gallery']}
             isFeatured
             onSubscribe={() => startSubscriptionCheckout('studio')}
-            disabled={checkoutLoading !== null}
-            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
+            disabled={planCtaDisabled('studio')}
+            ctaLabel={planCtaLabel('studio')}
           />
           <PricingCard
             plan={PLAN_LABEL.runway}
@@ -264,8 +275,8 @@ export default function PricingPage() {
               'Dedicated account support',
             ]}
             onSubscribe={() => startSubscriptionCheckout('runway')}
-            disabled={checkoutLoading !== null}
-            ctaLabel={currentActiveTier ? 'Manage in Stripe' : 'Subscribe'}
+            disabled={planCtaDisabled('runway')}
+            ctaLabel={planCtaLabel('runway')}
           />
         </div>
         {currentActiveTier && (

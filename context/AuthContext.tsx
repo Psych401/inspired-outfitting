@@ -30,6 +30,8 @@ function parseBillingPayload(data: Record<string, unknown>): BillingSnapshot {
     'canceled',
     'trialing',
     'unpaid',
+    'payment_action_required',
+    'invoice_finalization_failed',
   ];
   return {
     credits: typeof data.credits === 'number' && Number.isFinite(data.credits) ? data.credits : null,
@@ -55,6 +57,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const authHeaders = useCallback((): HeadersInit => {
     return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
   }, [accessToken]);
+
+  const applySessionUser = useCallback((session: Session) => {
+    const email = session.user.email;
+    if (!email) return;
+    setUser({
+      id: session.user.id,
+      email,
+      name:
+        (typeof session.user.user_metadata?.full_name === 'string' && session.user.user_metadata.full_name.trim()) ||
+        email.split('@')[0] ||
+        'Member',
+    });
+  }, []);
 
   const loadMe = useCallback(
     async (token?: string | null) => {
@@ -107,12 +122,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setAccessToken(session.access_token);
       const ok = await loadMe(session.access_token);
       if (ok) auditLog('post_checkout_session_restored', { userId: session.user.id });
-      return ok;
+      if (!ok) {
+        applySessionUser(session);
+        auditLog('post_checkout_session_restored', { userId: session.user.id, mode: 'partial' });
+      }
+      return true;
     } catch {
       setUser(null);
       return false;
     }
-  }, [loadMe]);
+  }, [applySessionUser, loadMe]);
 
   const getAccessToken = useCallback(async (): Promise<string | null> => {
     if (accessToken) return accessToken;
@@ -125,16 +144,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     let cancelled = false;
-    void (async () => {
-      await ensureSession();
-      if (!cancelled) setAuthHydrated(true);
-    })();
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, session: Session | null) => {
       if (session?.access_token) {
         setAccessToken(session.access_token);
-        await loadMe(session.access_token);
+        const ok = await loadMe(session.access_token);
+        if (!ok) applySessionUser(session);
       } else {
         setAccessToken(null);
         setUser(null);
@@ -146,7 +162,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       cancelled = true;
       subscription.unsubscribe();
     };
-  }, [ensureSession, loadMe]);
+  }, [applySessionUser, loadMe]);
 
   useEffect(() => {
     void refreshBilling();
@@ -156,7 +172,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const supabase = getSupabaseBrowserClient();
     const origin =
       typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_SITE_URL ?? '').replace(/\/$/, '');
-    const emailRedirectTo = origin ? `${origin}/pricing` : undefined;
+    const emailRedirectTo = origin ? `${origin}/auth/callback?next=/pricing` : undefined;
     const { data, error } = await supabase.auth.signUp({
       email: params.email,
       password: params.password,

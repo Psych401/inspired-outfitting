@@ -8,13 +8,25 @@ export async function GET(request: NextRequest) {
   const auth = await requireSessionUser(request);
   if (auth instanceof NextResponse) return auth;
 
-  await ensureUserProfile(auth.sub, {
-    email: auth.email,
-    fullName: auth.fullName,
-    avatarUrl: auth.avatarUrl,
+  try {
+    await ensureUserProfile(auth.sub, {
+      email: auth.email,
+      fullName: auth.fullName,
+      avatarUrl: auth.avatarUrl,
+    });
+  } catch (error) {
+    console.error('[api/me] ensureUserProfile failed, continuing with auth user fallback', error);
+  }
+
+  const profile = await getProfile(auth.sub).catch((error) => {
+    console.error('[api/me] getProfile failed, using auth metadata fallback', error);
+    return null;
   });
-  const profile = await getProfile(auth.sub);
-  const billing = await getOrCreateUser(auth.sub);
+
+  const billing = await getOrCreateUser(auth.sub).catch((error) => {
+    console.error('[api/me] getOrCreateUser failed', error);
+    return null;
+  });
 
   return NextResponse.json({
     user: {
@@ -24,10 +36,10 @@ export async function GET(request: NextRequest) {
       avatarUrl: profile?.avatarUrl ?? auth.avatarUrl ?? null,
     },
     billing: {
-      userId: billing.userId,
-      credits: billing.credits,
-      subscriptionTier: billing.subscriptionTier,
-      subscriptionStatus: billing.subscriptionStatus,
+      userId: billing?.userId ?? auth.sub,
+      credits: billing?.credits ?? null,
+      subscriptionTier: billing?.subscriptionTier ?? 'none',
+      subscriptionStatus: billing?.subscriptionStatus ?? 'none',
     },
   });
 }

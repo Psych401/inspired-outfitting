@@ -3,7 +3,15 @@ import type { SubscriptionPlanKey } from './products';
 import { normalizeSubscriptionPlanKey } from './plan-keys';
 import { defaultCreditsForNewUser } from './default-free-credits';
 
-export type SubscriptionStatus = 'none' | 'active' | 'past_due' | 'canceled' | 'trialing' | 'unpaid';
+export type SubscriptionStatus =
+  | 'none'
+  | 'active'
+  | 'past_due'
+  | 'canceled'
+  | 'trialing'
+  | 'unpaid'
+  | 'payment_action_required'
+  | 'invoice_finalization_failed';
 
 export interface UserBillingRecord {
   userId: string;
@@ -24,6 +32,30 @@ export function normalizeUserId(userId: string): string {
   return userId.trim();
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { code?: string }).code === '23505');
+}
+
+async function updateProfileFieldsById(
+  id: string,
+  patch: Record<string, string | null>
+): Promise<void> {
+  if (Object.keys(patch).length === 0) return;
+  const supabase = getSupabaseServiceRoleClient();
+  const { error: updateErr } = await supabase.from('profiles').update(patch).eq('id', id);
+  if (updateErr && !isUniqueViolation(updateErr)) {
+    throw new Error(`profiles update by id failed: ${updateErr.message}`);
+  }
+  // If email is taken by another row, keep the existing email but still persist non-email fields.
+  if (updateErr && isUniqueViolation(updateErr)) {
+    delete patch.email;
+    if (Object.keys(patch).length > 0) {
+      const { error: retryErr } = await supabase.from('profiles').update(patch).eq('id', id);
+      if (retryErr) throw new Error(`profiles update retry failed: ${retryErr.message}`);
+    }
+  }
+}
+
 export async function ensureUserProfile(
   userId: string,
   profile?: { email?: string | null; fullName?: string | null; avatarUrl?: string | null }
@@ -31,18 +63,87 @@ export async function ensureUserProfile(
   const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
   const email = profile?.email?.trim().toLowerCase() || null;
-  const { error } = await supabase
+  const { data: byId, error: byIdError } = await supabase
     .from('profiles')
-    .upsert(
-      {
+    .select('id,email,full_name,avatar_url')
+    .eq('id', id)
+    .maybeSingle();
+  if (byIdError) throw new Error(`profiles read by id failed: ${byIdError.message}`);
+
+  if (byId) {
+    const patch: Record<string, string | null> = {};
+    if (profile?.fullName !== undefined) patch.full_name = profile.fullName ?? null;
+    if (profile?.avatarUrl !== undefined) patch.avatar_url = profile.avatarUrl ?? null;
+    if (email && byId.email !== email) patch.email = email;
+    await updateProfileFieldsById(id, patch);
+  } else {
+    let claimedByEmail: { id: string } | null = null;
+    if (email) {
+      const { data: byEmail, error: byEmailError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('email', email)
+        .maybeSingle();
+      if (byEmailError) throw new Error(`profiles read by email failed: ${byEmailError.message}`);
+      claimedByEmail = byEmail;
+    }
+
+    if (claimedByEmail && claimedByEmail.id !== id) {
+      const { error: claimErr } = await supabase
+        .from('profiles')
+        .update({
+          id,
+          email,
+          full_name: profile?.fullName ?? null,
+          avatar_url: profile?.avatarUrl ?? null,
+        })
+        .eq('id', claimedByEmail.id);
+      if (claimErr && !isUniqueViolation(claimErr)) throw new Error(`profiles reconciliation failed: ${claimErr.message}`);
+      if (claimErr && isUniqueViolation(claimErr)) {
+        // Another request likely created/claimed the uuid row first.
+        const { data: nowById, error: nowByIdErr } = await supabase
+          .from('profiles')
+          .select('id,email')
+          .eq('id', id)
+          .maybeSingle();
+        if (nowByIdErr) throw new Error(`profiles reconciliation post-conflict read failed: ${nowByIdErr.message}`);
+        if (nowById) {
+          const patch: Record<string, string | null> = {};
+          if (profile?.fullName !== undefined) patch.full_name = profile.fullName ?? null;
+          if (profile?.avatarUrl !== undefined) patch.avatar_url = profile.avatarUrl ?? null;
+          if (email && nowById.email !== email) patch.email = email;
+          await updateProfileFieldsById(id, patch);
+        }
+      }
+    } else {
+      const { error: insertErr } = await supabase.from('profiles').insert({
         id,
         email,
         full_name: profile?.fullName ?? null,
         avatar_url: profile?.avatarUrl ?? null,
-      },
-      { onConflict: 'id' }
-    );
-  if (error) throw new Error(`profiles upsert failed: ${error.message}`);
+      });
+      if (insertErr && !isUniqueViolation(insertErr)) {
+        throw new Error(`profiles insert failed: ${insertErr.message}`);
+      }
+      if (insertErr && isUniqueViolation(insertErr) && email) {
+        const { data: nowByEmail, error: reReadErr } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('email', email)
+          .maybeSingle();
+        if (reReadErr) throw new Error(`profiles reconciliation re-read failed: ${reReadErr.message}`);
+        if (nowByEmail && nowByEmail.id !== id) {
+          const { error: claimErr } = await supabase
+            .from('profiles')
+            .update({ id, full_name: profile?.fullName ?? null, avatar_url: profile?.avatarUrl ?? null })
+            .eq('id', nowByEmail.id);
+          if (claimErr && !isUniqueViolation(claimErr)) {
+            throw new Error(`profiles reconciliation claim failed: ${claimErr.message}`);
+          }
+        }
+      }
+    }
+  }
 
   const { error: appUserErr } = await supabase.from('app_users').upsert(
     {
@@ -78,7 +179,6 @@ export async function getProfile(userId: string): Promise<{
 }
 
 export async function getOrCreateUser(userId: string): Promise<UserBillingRecord> {
-  await ensureUserProfile(userId);
   const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
 
@@ -163,6 +263,20 @@ export async function getUser(userId: string): Promise<UserBillingRecord | undef
     credits: row.credit_balance,
     updatedAt: Date.parse(row.updated_at),
   };
+}
+
+/** Resolve app user id from Stripe Customer id (webhooks when subscription metadata is missing). */
+export async function getUserIdByStripeCustomerId(stripeCustomerId: string): Promise<string | null> {
+  const supabase = getSupabaseServiceRoleClient();
+  const id = stripeCustomerId.trim();
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from('user_billing_state')
+    .select('user_id')
+    .eq('stripe_customer_id', id)
+    .maybeSingle();
+  if (error) throw new Error(`user_billing_state lookup by stripe customer failed: ${error.message}`);
+  return data?.user_id ?? null;
 }
 
 export async function patchUser(userId: string, patch: Partial<UserBillingRecord>): Promise<UserBillingRecord> {

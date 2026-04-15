@@ -53,8 +53,20 @@ const Header: React.FC = () => {
     </>
   );
 
+  const billingWarning = billingIssueBannerText(
+    isAuthenticated ? (billing.subscriptionStatus as SubscriptionStatus) : 'none'
+  );
+
   return (
     <header className="bg-warm-cream/80 backdrop-blur-lg sticky top-0 z-50 shadow-sm">
+      {billingWarning && (
+        <div
+          className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-950"
+          role="status"
+        >
+          {billingWarning}
+        </div>
+      )}
       <div className="container mx-auto px-6 py-4 flex justify-between items-center">
         <Link href="/" className="text-2xl font-heading font-bold text-charcoal-grey">
           Inspired Outfitting
@@ -137,6 +149,19 @@ const Header: React.FC = () => {
     </header>
   );
 };
+
+function billingIssueBannerText(status: SubscriptionStatus): string | null {
+  switch (status) {
+    case 'past_due':
+      return 'Payment failed. Please update your billing details in Stripe (Manage subscription on Pricing or Profile).';
+    case 'payment_action_required':
+      return 'Payment requires action. Please complete payment authentication in Stripe (Manage subscription on Pricing or Profile).';
+    case 'invoice_finalization_failed':
+      return 'We could not finalize your last invoice. Please check your billing in Stripe or contact support.';
+    default:
+      return null;
+  }
+}
 
 function subscribedTitle(billing: { subscriptionTier: string; subscriptionStatus: string }): string {
   const tier =

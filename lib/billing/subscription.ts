@@ -9,5 +9,6 @@ export function canPurchaseCreditPacks(
   tier: SubscriptionPlanKey | 'none'
 ): boolean {
   if (tier === 'none') return false;
+  if (status === 'payment_action_required' || status === 'invoice_finalization_failed') return false;
   return status === 'active' || status === 'trialing' || status === 'past_due';
 }

@@ -16,7 +16,10 @@ type AuditEvent =
   | 'credits_granted'
   | 'credits_deducted'
   | 'credits_restored'
-  | 'subscription_status_changed';
+  | 'subscription_status_changed'
+  | 'invoice_payment_failed'
+  | 'invoice_payment_action_required'
+  | 'invoice_finalization_failed';
 
 export function auditLog(
   event: AuditEvent,

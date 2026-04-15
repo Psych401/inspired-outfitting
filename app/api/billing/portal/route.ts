@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth/require-user';
 import { getStripe } from '@/lib/billing/stripe-client';
-import { ensureUserProfile, getUser } from '@/lib/billing/user-store';
+import { getUser } from '@/lib/billing/user-store';
 import { auditLog } from '@/lib/billing/audit';
 
 export const runtime = 'nodejs';
@@ -22,7 +22,6 @@ export async function POST(request: NextRequest) {
 
   const auth = await requireSessionUser(request);
   if (auth instanceof NextResponse) return auth;
-  await ensureUserProfile(auth.sub, { email: auth.email, fullName: auth.fullName, avatarUrl: auth.avatarUrl });
 
   const billing = await getUser(auth.sub);
   const customerId = billing?.stripeCustomerId;

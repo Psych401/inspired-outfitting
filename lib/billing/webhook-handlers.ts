@@ -2,7 +2,9 @@ import type Stripe from 'stripe';
 import { getStripe } from './stripe-client';
 import {
   assertCreditPackKey,
+  comparePlanTier,
   packCredits,
+  subscriptionPlanForStripePriceId,
   subscriptionCreditDifference,
   subscriptionCreditsForPlan,
   type SubscriptionPlanKey,
@@ -10,6 +12,7 @@ import {
 import { normalizeSubscriptionPlanKey } from './plan-keys';
 import {
   getUser,
+  getUserIdByStripeCustomerId,
   patchUser,
   setStripeCustomer,
   normalizeUserId,
@@ -24,6 +27,14 @@ import {
   sourceKeyForSubscriptionUpgradeGrant,
 } from './grant-idempotency';
 import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
+
+const DEBUG_PORTAL_UPGRADE =
+  process.env.BILLING_DEBUG_PORTAL_UPGRADES === '1' || process.env.BILLING_DEBUG_PORTAL_UPGRADES === 'true';
+
+function portalUpgradeDebug(message: string, meta: Record<string, unknown>): void {
+  if (!DEBUG_PORTAL_UPGRADE) return;
+  console.log('[billing][webhook][portal_upgrade]', message, JSON.stringify(meta));
+}
 
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -47,6 +58,156 @@ function mapStripeSubStatus(status: Stripe.Subscription.Status): SubscriptionSta
     default:
       return 'none';
   }
+}
+
+function planKeyFromSubscription(sub: Stripe.Subscription): SubscriptionPlanKey | null {
+  for (const item of sub.items.data) {
+    const parsed = subscriptionPlanForStripePriceId(item.price?.id ?? null);
+    if (parsed) return parsed;
+  }
+  return normalizeSubscriptionPlanKey(sub.metadata?.planKey);
+}
+
+/** Price id from an invoice line (Stripe may return price as id string or expanded object). */
+function priceIdFromInvoiceLine(line: Stripe.InvoiceLineItem): string | null {
+  const p = line.price;
+  if (typeof p === 'string') return p;
+  if (p && typeof p === 'object' && 'id' in p && typeof (p as Stripe.Price).id === 'string') {
+    return (p as Stripe.Price).id;
+  }
+  const plan = line.plan;
+  if (typeof plan === 'string') return plan;
+  if (plan && typeof plan === 'object' && 'id' in plan && typeof (plan as Stripe.Plan).id === 'string') {
+    return (plan as Stripe.Plan).id;
+  }
+  return null;
+}
+
+/** Collect distinct subscription tiers referenced on invoice lines (portal proration lines). */
+function distinctPlansFromInvoiceLines(invoice: Stripe.Invoice): SubscriptionPlanKey[] {
+  const tiers = new Set<SubscriptionPlanKey>();
+  for (const line of invoice.lines.data) {
+    const pid = priceIdFromInvoiceLine(line);
+    const plan = subscriptionPlanForStripePriceId(pid);
+    if (plan) tiers.add(plan);
+  }
+  return [...tiers];
+}
+
+/**
+ * Infer upgrade from/to from invoice lines: lowest tier → highest tier among distinct known plans.
+ * Works for portal-driven upgrades where proration lines reference both price IDs.
+ */
+function inferUpgradePlansFromInvoiceLines(invoice: Stripe.Invoice): {
+  fromPlan: SubscriptionPlanKey;
+  toPlan: SubscriptionPlanKey;
+} | null {
+  const distinct = distinctPlansFromInvoiceLines(invoice);
+  if (distinct.length < 2) return null;
+  distinct.sort((a, b) => comparePlanTier(a, b));
+  const fromPlan = distinct[0];
+  const toPlan = distinct[distinct.length - 1];
+  if (fromPlan === toPlan) return null;
+  if (comparePlanTier(toPlan, fromPlan) <= 0) return null;
+  return { fromPlan, toPlan };
+}
+
+/** Legacy fallback: net amounts per plan (older line shapes). */
+function inferUpgradePlansFromInvoice(invoice: Stripe.Invoice): {
+  fromPlan: SubscriptionPlanKey;
+  toPlan: SubscriptionPlanKey;
+} | null {
+  const scores = new Map<SubscriptionPlanKey, number>();
+  for (const line of invoice.lines.data) {
+    const plan = subscriptionPlanForStripePriceId(priceIdFromInvoiceLine(line));
+    if (!plan) continue;
+    const amount = typeof line.amount === 'number' ? line.amount : 0;
+    scores.set(plan, (scores.get(plan) ?? 0) + amount);
+  }
+  const entries = [...scores.entries()];
+  if (entries.length < 2) return null;
+  entries.sort((a, b) => a[1] - b[1]);
+  const fromPlan = entries[0][0];
+  const toPlan = entries[entries.length - 1][0];
+  if (fromPlan === toPlan) return null;
+  if (comparePlanTier(toPlan, fromPlan) <= 0) return null;
+  return { fromPlan, toPlan };
+}
+
+async function resolveUserIdFromInvoice(stripe: Stripe, invoice: Stripe.Invoice): Promise<string | null> {
+  const subRef = invoice.subscription;
+  const subId = typeof subRef === 'string' ? subRef : subRef?.id ?? null;
+  if (subId) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(subId);
+      if (sub.metadata?.userId) return normalizeUserId(sub.metadata.userId);
+    } catch {
+      /* ignore */
+    }
+  }
+  const custRef = invoice.customer;
+  const customerId = typeof custRef === 'string' ? custRef : custRef?.id ?? null;
+  if (customerId) {
+    const uid = await getUserIdByStripeCustomerId(customerId);
+    if (uid) return normalizeUserId(uid);
+  }
+  return null;
+}
+
+/**
+ * Resolve pre-upgrade tier for portal / subscription_update invoices.
+ * Order: subscription metadata (in-app upgrade markers) → invoice line price IDs → DB tier if still stale (invoice before subscription.updated).
+ */
+async function resolvePortalUpgradeOldPlan(
+  stripe: Stripe,
+  invoice: Stripe.Invoice,
+  sub: Stripe.Subscription,
+  userId: string,
+  newPlan: SubscriptionPlanKey
+): Promise<SubscriptionPlanKey | null> {
+  const metaFrom = normalizeSubscriptionPlanKey(sub.metadata?.upgradeFromPlanKey);
+  const metaTo = normalizeSubscriptionPlanKey(sub.metadata?.upgradeToPlanKey);
+  if (metaFrom && metaTo && metaTo === newPlan && comparePlanTier(newPlan, metaFrom) > 0) {
+    portalUpgradeDebug('old_plan_source', { source: 'metadata', metaFrom, metaTo, newPlan });
+    return metaFrom;
+  }
+
+  let invFull: Stripe.Invoice = invoice;
+  try {
+    invFull = await stripe.invoices.retrieve(invoice.id, {
+      expand: ['lines.data.price'],
+    });
+  } catch {
+    /* embedded invoice object */
+  }
+
+  let inferred = inferUpgradePlansFromInvoiceLines(invFull);
+  if (!inferred) inferred = inferUpgradePlansFromInvoice(invFull);
+
+  if (inferred && inferred.toPlan === newPlan && inferred.fromPlan !== newPlan) {
+    portalUpgradeDebug('old_plan_source', {
+      source: 'invoice_lines',
+      fromPlan: inferred.fromPlan,
+      toPlan: inferred.toPlan,
+      newPlan,
+    });
+    return inferred.fromPlan;
+  }
+
+  const u = await getUser(userId);
+  const stored = u?.subscriptionTier;
+  if (
+    stored &&
+    stored !== 'none' &&
+    stored !== newPlan &&
+    comparePlanTier(newPlan, stored) > 0
+  ) {
+    portalUpgradeDebug('old_plan_source', { source: 'db_tier_stale', stored, newPlan });
+    return stored;
+  }
+
+  portalUpgradeDebug('old_plan_unresolved', { newPlan, inferred: inferred ?? null });
+  return null;
 }
 
 /** Adds credits via `app_grant_credits` (balance += amount); does not replace the balance. */
@@ -218,15 +379,20 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             : invoice.subscription?.id ?? null;
         if (!subId) break;
 
-        const sub = await stripe.subscriptions.retrieve(subId);
+        const sub = await stripe.subscriptions.retrieve(subId, {
+          expand: ['items.data.price'],
+        });
         const userId = sub.metadata?.userId;
+        const planKeyFromSub = planKeyFromSubscription(sub);
         const planKeyRaw = sub.metadata?.planKey;
         if (!userId || !planKeyRaw) {
-          console.warn('[billing][webhook] invoice.paid subscription missing userId/planKey metadata');
-          break;
+          if (!userId || !planKeyFromSub) {
+            console.warn('[billing][webhook] invoice.paid subscription missing userId/planKey metadata');
+            break;
+          }
         }
 
-        const planKey = normalizeSubscriptionPlanKey(planKeyRaw);
+        const planKey = planKeyFromSub ?? normalizeSubscriptionPlanKey(planKeyRaw);
         if (!planKey) break;
 
         const br = invoice.billing_reason;
@@ -248,53 +414,139 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             });
           }
         } else if (br === 'subscription_update') {
-          const upgradeFromRaw = sub.metadata?.upgradeFromPlanKey;
-          const upgradeToRaw = sub.metadata?.upgradeToPlanKey;
-          const upgradeInvoiceId = sub.metadata?.upgradeInvoiceId;
-          const upgradeFrom = normalizeSubscriptionPlanKey(upgradeFromRaw);
-          const upgradeTo = normalizeSubscriptionPlanKey(upgradeToRaw);
-          const shouldApplyUpgradeDiff =
-            upgradeFrom !== null &&
-            upgradeTo !== null &&
-            upgradeTo === planKey &&
-            (upgradeInvoiceId === invoice.id || !upgradeInvoiceId);
-          if (!shouldApplyUpgradeDiff) break;
-          const diff = subscriptionCreditDifference(upgradeFrom, upgradeTo);
-          if (diff <= 0) break;
+          const newPlan = planKey;
+          const oldPlan = await resolvePortalUpgradeOldPlan(stripe, invoice, sub, userId, newPlan);
+          const diff =
+            oldPlan && comparePlanTier(newPlan, oldPlan) > 0
+              ? subscriptionCreditDifference(oldPlan, newPlan)
+              : 0;
+
+          portalUpgradeDebug('subscription_update_eval', {
+            billingReason: br,
+            stripeInvoiceId: invoice.id,
+            stripeSubscriptionId: sub.id,
+            userId,
+            oldPlan: oldPlan ?? null,
+            newPlan,
+            computedCreditDiff: diff,
+          });
+
+          if (!oldPlan) {
+            portalUpgradeDebug('subscription_update_skip', { reason: 'no_old_plan' });
+            break;
+          }
+          if (comparePlanTier(newPlan, oldPlan) <= 0) {
+            portalUpgradeDebug('subscription_update_skip', { reason: 'downgrade_or_same', oldPlan, newPlan });
+            break;
+          }
+          if (diff <= 0) {
+            portalUpgradeDebug('subscription_update_skip', { reason: 'diff_non_positive', diff });
+            break;
+          }
+
           const granted = await grantSubscriptionCredits(
             userId,
             diff,
-            planKey,
+            newPlan,
             event.id,
             'subscription_upgrade',
             sourceKeyForSubscriptionUpgradeGrant(invoice.id)
           );
-          if (!granted) {
-            auditLog('subscription_upgrade_duplicate_ignored', {
-              userId,
-              fromPlan: upgradeFrom,
-              toPlan: upgradeTo,
-              stripeEventId: event.id,
+
+          if (granted) {
+            portalUpgradeDebug('subscription_update_granted', {
+              oldPlan,
+              newPlan,
+              diff,
               invoiceId: invoice.id,
             });
-          } else {
             auditLog('subscription_upgraded', {
               userId,
-              fromPlan: upgradeFrom,
-              toPlan: upgradeTo,
+              fromPlan: oldPlan,
+              toPlan: newPlan,
               creditDifference: diff,
               stripeEventId: event.id,
               invoiceId: invoice.id,
             });
+          } else {
+            portalUpgradeDebug('subscription_update_skip', { reason: 'duplicate_or_idempotent', invoiceId: invoice.id });
+            auditLog('subscription_upgrade_duplicate_ignored', {
+              userId,
+              fromPlan: oldPlan,
+              toPlan: newPlan,
+              stripeEventId: event.id,
+              invoiceId: invoice.id,
+            });
           }
-          await stripe.subscriptions.update(sub.id, {
-            metadata: {
-              ...sub.metadata,
-              upgradeFromPlanKey: '',
-              upgradeToPlanKey: '',
-              upgradeInvoiceId: '',
-            },
-          });
+
+          if (sub.metadata?.upgradeFromPlanKey || sub.metadata?.upgradeToPlanKey) {
+            await stripe.subscriptions.update(sub.id, {
+              metadata: {
+                ...sub.metadata,
+                upgradeFromPlanKey: '',
+                upgradeToPlanKey: '',
+                upgradeInvoiceId: '',
+              },
+            });
+          }
+        }
+        break;
+      }
+
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId =
+          typeof invoice.subscription === 'string'
+            ? invoice.subscription
+            : invoice.subscription?.id ?? null;
+        const userId = await resolveUserIdFromInvoice(stripe, invoice);
+        auditLog('invoice_payment_failed', {
+          ...(userId ? { userId } : {}),
+          stripeEventId: event.id,
+          stripeInvoiceId: invoice.id,
+          ...(subscriptionId ? { subscriptionId } : {}),
+          attemptCount: invoice.attempt_count,
+        });
+        if (userId) {
+          await patchUser(userId, { subscriptionStatus: 'past_due' });
+        }
+        break;
+      }
+
+      case 'invoice.payment_action_required': {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId =
+          typeof invoice.subscription === 'string'
+            ? invoice.subscription
+            : invoice.subscription?.id ?? null;
+        const userId = await resolveUserIdFromInvoice(stripe, invoice);
+        auditLog('invoice_payment_action_required', {
+          ...(userId ? { userId } : {}),
+          stripeEventId: event.id,
+          stripeInvoiceId: invoice.id,
+          ...(subscriptionId ? { subscriptionId } : {}),
+        });
+        if (userId) {
+          await patchUser(userId, { subscriptionStatus: 'payment_action_required' });
+        }
+        break;
+      }
+
+      case 'invoice.finalization_failed': {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId =
+          typeof invoice.subscription === 'string'
+            ? invoice.subscription
+            : invoice.subscription?.id ?? null;
+        const userId = await resolveUserIdFromInvoice(stripe, invoice);
+        auditLog('invoice_finalization_failed', {
+          ...(userId ? { userId } : {}),
+          stripeEventId: event.id,
+          stripeInvoiceId: invoice.id,
+          ...(subscriptionId ? { subscriptionId } : {}),
+        });
+        if (userId) {
+          await patchUser(userId, { subscriptionStatus: 'invoice_finalization_failed' });
         }
         break;
       }
@@ -304,17 +556,29 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         const userId = sub.metadata?.userId;
         if (!userId) break;
         const planKeyRaw = sub.metadata?.planKey;
+        const existing = await getUser(userId);
         let tier: SubscriptionPlanKey | 'none' = 'none';
-        if (planKeyRaw) {
+        const parsedFromItems = planKeyFromSubscription(sub);
+        if (parsedFromItems) {
+          tier = parsedFromItems;
+        } else if (planKeyRaw) {
           const parsed = normalizeSubscriptionPlanKey(planKeyRaw);
-          if (parsed) {
-            tier = parsed;
-          } else {
-            const existing = await getUser(userId);
-            tier = existing?.subscriptionTier && existing.subscriptionTier !== 'none' ? existing.subscriptionTier : 'none';
-          }
+          if (parsed) tier = parsed;
+        }
+        if (tier === 'none') {
+          tier = existing?.subscriptionTier && existing.subscriptionTier !== 'none' ? existing.subscriptionTier : 'none';
         }
         const st = mapStripeSubStatus(sub.status);
+
+        if (tier !== 'none' && sub.metadata?.planKey !== tier) {
+          await stripe.subscriptions.update(sub.id, {
+            metadata: {
+              ...sub.metadata,
+              planKey: tier,
+            },
+          });
+        }
+
         await patchUser(userId, {
           subscriptionStatus: st,
           subscriptionTier: st === 'canceled' || st === 'none' ? 'none' : tier,

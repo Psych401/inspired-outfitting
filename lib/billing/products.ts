@@ -53,6 +53,15 @@ export function getSubscriptionStripePriceId(planKey: string): string | null {
   return envPrice(map[planKey as SubscriptionPlanKey]) ?? null;
 }
 
+export function subscriptionPlanForStripePriceId(priceId: string | null | undefined): SubscriptionPlanKey | null {
+  if (!priceId) return null;
+  const byPlan: SubscriptionPlanKey[] = ['closet', 'studio', 'runway'];
+  for (const planKey of byPlan) {
+    if (getSubscriptionStripePriceId(planKey) === priceId) return planKey;
+  }
+  return null;
+}
+
 export function getCreditPackStripePriceId(packKey: string): string | null {
   if (!PACK_KEYS.has(packKey)) return null;
   const map: Record<CreditPackKey, string> = {
