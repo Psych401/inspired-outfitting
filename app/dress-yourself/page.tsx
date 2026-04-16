@@ -201,6 +201,7 @@ export default function DressYourselfPage() {
     ensureSession,
     getAccessToken,
     refreshBilling,
+    rehydrateAfterStripeReturn,
     addHistoryItem,
     imagesToRegenerate,
     clearRegenerate,
@@ -230,12 +231,15 @@ export default function DressYourselfPage() {
     if (typeof window === 'undefined') return;
     const q = new URLSearchParams(window.location.search);
     if (q.get('checkout') === 'success') {
-      void refreshBilling();
+      void (async () => {
+        await rehydrateAfterStripeReturn();
+        await refreshBilling();
+      })();
       q.delete('checkout');
       const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
       window.history.replaceState({}, '', next);
     }
-  }, [refreshBilling]);
+  }, [refreshBilling, rehydrateAfterStripeReturn]);
 
   useEffect(() => {
     const initFromRegenerate = async () => {

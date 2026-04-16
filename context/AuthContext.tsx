@@ -1,11 +1,12 @@
 'use client';
 
-import React, { createContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import React, { createContext, useState, useCallback, useEffect, ReactNode, useRef } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { AuthContextType, User, TryOnHistoryItem, BillingSnapshot, BillingTier, BillingSubscriptionStatus } from '../types';
 import { normalizeSubscriptionPlanKey } from '@/lib/billing/plan-keys';
 import { auditLog } from '@/lib/billing/audit';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -54,6 +55,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [favoriteOutfitImages, setFavoriteOutfitImages] = useState<string[]>([]);
   const [imagesToRegenerate, setImagesToRegenerate] = useState<{ personImg: string; outfitImg: string } | null>(null);
 
+  const accessTokenRef = useRef<string | null>(null);
+  accessTokenRef.current = accessToken;
+
+  const loadMeRef = useRef<
+    (tokenOverride?: string | null) => Promise<boolean>
+  >(async () => false);
+  const applySessionUserRef = useRef<(session: Session) => void>(() => {});
+
   const authHeaders = useCallback((): HeadersInit => {
     return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
   }, [accessToken]);
@@ -71,27 +80,66 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     });
   }, []);
 
+  applySessionUserRef.current = applySessionUser;
+
   const loadMe = useCallback(
-    async (token?: string | null) => {
-      const hdrs: HeadersInit = token ? { Authorization: `Bearer ${token}` } : authHeaders();
-      if (!hdrs || Object.keys(hdrs).length === 0) return false;
-      const res = await fetch('/api/me', { credentials: 'include', cache: 'no-store', headers: hdrs });
-      if (!res.ok) return false;
-      const data = (await res.json()) as {
-        user?: { id?: string; email?: string; fullName?: string | null };
-        billing?: Record<string, unknown>;
-      };
-      if (!data.user?.id || !data.user?.email) return false;
-      setUser({
-        id: data.user.id,
-        email: data.user.email,
-        name: data.user.fullName?.trim() || data.user.email.split('@')[0] || 'Member',
-      });
-      if (data.billing) setBilling(parseBillingPayload(data.billing));
-      return true;
+    async (tokenOverride?: string | null): Promise<boolean> => {
+      const supabase = getSupabaseBrowserClient();
+      let authToken = (tokenOverride ?? accessTokenRef.current)?.trim() || null;
+      if (!authToken) {
+        authRedirectDebug('loadMe_no_token_yet', { hadOverride: tokenOverride != null });
+        return false;
+      }
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        authRedirectDebug('loadMe_attempt', {
+          attempt,
+          callingApiMe: true,
+          tokenSource: tokenOverride != null ? 'explicit' : 'ref',
+        });
+        const res = await fetch('/api/me', {
+          credentials: 'include',
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (res.status === 401) {
+          authRedirectDebug('loadMe_401', { attempt });
+          const { data, error } = await supabase.auth.refreshSession();
+          if (error || !data.session?.access_token) {
+            authRedirectDebug('loadMe_refresh_failed', { attempt, message: error?.message });
+            return false;
+          }
+          authToken = data.session.access_token;
+          setAccessToken(authToken);
+          continue;
+        }
+
+        if (!res.ok) {
+          authRedirectDebug('loadMe_http_error', { status: res.status, attempt });
+          return false;
+        }
+
+        const data = (await res.json()) as {
+          user?: { id?: string; email?: string; fullName?: string | null };
+          billing?: Record<string, unknown>;
+        };
+        if (!data.user?.id || !data.user?.email) return false;
+        setUser({
+          id: data.user.id,
+          email: data.user.email,
+          name: data.user.fullName?.trim() || data.user.email.split('@')[0] || 'Member',
+        });
+        if (data.billing) setBilling(parseBillingPayload(data.billing));
+        authRedirectDebug('loadMe_ok', { attempt });
+        return true;
+      }
+      return false;
     },
-    [authHeaders]
+    []
   );
+
+  loadMeRef.current = loadMe;
 
   const refreshBilling = useCallback(async () => {
     if (!user) {
@@ -112,26 +160,71 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [user, authHeaders]);
 
+  const rehydrateAfterStripeReturn = useCallback(async (): Promise<boolean> => {
+    authRedirectDebug('rehydrate_start', {
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+    });
+    try {
+      const supabase = getSupabaseBrowserClient();
+      let {
+        data: { session },
+      } = await supabase.auth.getSession();
+      authRedirectDebug('rehydrate_getSession', {
+        hasAccess: !!session?.access_token,
+        hasRefresh: !!session?.refresh_token,
+      });
+      if (!session?.access_token && session?.refresh_token) {
+        const { data, error } = await supabase.auth.refreshSession();
+        session = data.session ?? session;
+        authRedirectDebug('rehydrate_after_refresh', {
+          hasAccess: !!session?.access_token,
+          refreshError: error?.message,
+        });
+      }
+      if (!session?.access_token) {
+        authRedirectDebug('rehydrate_abort_no_session');
+        return false;
+      }
+      setAccessToken(session.access_token);
+      const ok = await loadMeRef.current(session.access_token);
+      if (ok) auditLog('post_checkout_session_restored', { userId: session.user.id, context: 'stripe_return' });
+      if (!ok) {
+        applySessionUserRef.current(session);
+        auditLog('post_checkout_session_restored', { userId: session.user.id, mode: 'partial', context: 'stripe_return' });
+      }
+      return true;
+    } catch (e) {
+      authRedirectDebug('rehydrate_error', { message: e instanceof Error ? e.message : 'unknown' });
+      return false;
+    }
+  }, []);
+
   const ensureSession = useCallback(async (): Promise<boolean> => {
     try {
       const supabase = getSupabaseBrowserClient();
-      const { data, error } = await supabase.auth.getSession();
+      let {
+        data: { session },
+        error,
+      } = await supabase.auth.getSession();
       if (error) return false;
-      const session = data.session;
+      if (!session?.access_token && session?.refresh_token) {
+        const { data } = await supabase.auth.refreshSession();
+        session = data.session ?? session;
+      }
       if (!session?.access_token) return false;
       setAccessToken(session.access_token);
-      const ok = await loadMe(session.access_token);
+      const ok = await loadMeRef.current(session.access_token);
       if (ok) auditLog('post_checkout_session_restored', { userId: session.user.id });
       if (!ok) {
-        applySessionUser(session);
+        applySessionUserRef.current(session);
         auditLog('post_checkout_session_restored', { userId: session.user.id, mode: 'partial' });
       }
       return true;
     } catch {
-      setUser(null);
       return false;
     }
-  }, [applySessionUser, loadMe]);
+  }, []);
 
   const getAccessToken = useCallback(async (): Promise<string | null> => {
     if (accessToken) return accessToken;
@@ -140,29 +233,65 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return getSupabaseBrowserClient().auth.getSession().then(({ data }) => data.session?.access_token ?? null);
   }, [accessToken, ensureSession]);
 
-  /** Restore client user state from the httpOnly session cookie (e.g. return from Stripe checkout). */
+  /** Bootstrap + listener: do not treat transient null session as logout (fixes post-Stripe full-page return). */
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     let cancelled = false;
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session: Session | null) => {
+
+    void (async () => {
+      authRedirectDebug('bootstrap_start');
+      let {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
+      authRedirectDebug('bootstrap_getSession', {
+        hasAccess: !!session?.access_token,
+        hasRefresh: !!session?.refresh_token,
+      });
+      if (!session?.access_token && session?.refresh_token) {
+        const { data } = await supabase.auth.refreshSession();
+        session = data.session ?? session;
+        authRedirectDebug('bootstrap_after_refresh', { hasAccess: !!session?.access_token });
+      }
       if (session?.access_token) {
         setAccessToken(session.access_token);
-        const ok = await loadMe(session.access_token);
-        if (!ok) applySessionUser(session);
-      } else {
+        await loadMeRef.current(session.access_token);
+      }
+      if (!cancelled) setAuthHydrated(true);
+      authRedirectDebug('bootstrap_done', { hydrated: true });
+    })();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session: Session | null) => {
+      if (cancelled) return;
+      authRedirectDebug('onAuthStateChange', {
+        event,
+        hasAccess: !!session?.access_token,
+        hasRefresh: !!session?.refresh_token,
+      });
+
+      if (event === 'SIGNED_OUT') {
         setAccessToken(null);
         setUser(null);
         setBilling(emptyBilling());
+        setAuthHydrated(true);
+        return;
       }
-      if (!cancelled) setAuthHydrated(true);
+
+      if (session?.access_token) {
+        setAccessToken(session.access_token);
+        const ok = await loadMeRef.current(session.access_token);
+        if (!ok) applySessionUserRef.current(session);
+      }
+      setAuthHydrated(true);
     });
+
     return () => {
       cancelled = true;
       subscription.unsubscribe();
     };
-  }, [applySessionUser, loadMe]);
+  }, []);
 
   useEffect(() => {
     void refreshBilling();
@@ -270,6 +399,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     billing,
     refreshBilling,
     ensureSession,
+    rehydrateAfterStripeReturn,
     getAccessToken,
     history,
     uploadedPersonImages,

@@ -43,6 +43,8 @@ export interface AuthContextType {
   billing: BillingSnapshot;
   refreshBilling: () => Promise<void>;
   ensureSession: () => Promise<boolean>;
+  /** Call after returning from Stripe Checkout / Customer Portal to refresh tokens and /api/me. */
+  rehydrateAfterStripeReturn: () => Promise<boolean>;
   getAccessToken: () => Promise<string | null>;
   history: TryOnHistoryItem[];
   uploadedPersonImages: string[];

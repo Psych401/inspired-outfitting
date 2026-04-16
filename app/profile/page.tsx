@@ -18,6 +18,7 @@ export default function ProfilePage() {
     authHydrated,
     billing,
     refreshBilling,
+    rehydrateAfterStripeReturn,
     getAccessToken,
     history,
     logout,
@@ -31,6 +32,20 @@ export default function ProfilePage() {
   useEffect(() => {
     void refreshBilling();
   }, [refreshBilling]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('portal') === 'return') {
+      void (async () => {
+        await rehydrateAfterStripeReturn();
+        await refreshBilling();
+      })();
+      q.delete('portal');
+      const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
+      window.history.replaceState({}, '', next);
+    }
+  }, [refreshBilling, rehydrateAfterStripeReturn]);
 
   if (!authHydrated) {
     return (

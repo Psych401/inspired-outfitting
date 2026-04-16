@@ -154,6 +154,14 @@ async function resolveUserIdFromInvoice(stripe: Stripe, invoice: Stripe.Invoice)
   return null;
 }
 
+async function resolveUserIdFromSubscription(sub: Stripe.Subscription): Promise<string | null> {
+  if (sub.metadata?.userId) return normalizeUserId(sub.metadata.userId);
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id ?? null;
+  if (!customerId) return null;
+  const uid = await getUserIdByStripeCustomerId(customerId);
+  return uid ? normalizeUserId(uid) : null;
+}
+
 /**
  * Resolve pre-upgrade tier for portal / subscription_update invoices.
  * Order: subscription metadata (in-app upgrade markers) → invoice line price IDs → DB tier if still stale (invoice before subscription.updated).
@@ -382,7 +390,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         const sub = await stripe.subscriptions.retrieve(subId, {
           expand: ['items.data.price'],
         });
-        const userId = sub.metadata?.userId;
+        const userId = await resolveUserIdFromSubscription(sub);
         const planKeyFromSub = planKeyFromSubscription(sub);
         const planKeyRaw = sub.metadata?.planKey;
         if (!userId || !planKeyRaw) {
@@ -394,9 +402,20 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
 
         const planKey = planKeyFromSub ?? normalizeSubscriptionPlanKey(planKeyRaw);
         if (!planKey) break;
+        const before = await getUser(userId);
+        const appTierBefore = before?.subscriptionTier ?? 'none';
 
         const br = invoice.billing_reason;
         if (br === 'subscription_cycle') {
+          portalUpgradeDebug('subscription_cycle_eval', {
+            stripeEventType: event.type,
+            billingReason: br,
+            stripeInvoiceId: invoice.id,
+            stripeSubscriptionId: sub.id,
+            userId,
+            appTierBefore,
+            newPlan: planKey,
+          });
           const granted = await grantSubscriptionCreditsForPlan(
             userId,
             planKey,
@@ -413,6 +432,13 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
               billingReason: br,
             });
           }
+          portalUpgradeDebug('subscription_cycle_result', {
+            stripeInvoiceId: invoice.id,
+            stripeSubscriptionId: sub.id,
+            userId,
+            granted,
+            renewalCredits: subscriptionCreditsForPlan(planKey),
+          });
         } else if (br === 'subscription_update') {
           const newPlan = planKey;
           const oldPlan = await resolvePortalUpgradeOldPlan(stripe, invoice, sub, userId, newPlan);
@@ -426,6 +452,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             stripeInvoiceId: invoice.id,
             stripeSubscriptionId: sub.id,
             userId,
+            appTierBefore,
             oldPlan: oldPlan ?? null,
             newPlan,
             computedCreditDiff: diff,
@@ -476,17 +503,6 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
               toPlan: newPlan,
               stripeEventId: event.id,
               invoiceId: invoice.id,
-            });
-          }
-
-          if (sub.metadata?.upgradeFromPlanKey || sub.metadata?.upgradeToPlanKey) {
-            await stripe.subscriptions.update(sub.id, {
-              metadata: {
-                ...sub.metadata,
-                upgradeFromPlanKey: '',
-                upgradeToPlanKey: '',
-                upgradeInvoiceId: '',
-              },
             });
           }
         }
@@ -553,7 +569,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
 
       case 'customer.subscription.updated': {
         const sub = event.data.object as Stripe.Subscription;
-        const userId = sub.metadata?.userId;
+        const userId = await resolveUserIdFromSubscription(sub);
         if (!userId) break;
         const planKeyRaw = sub.metadata?.planKey;
         const existing = await getUser(userId);
@@ -569,15 +585,14 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           tier = existing?.subscriptionTier && existing.subscriptionTier !== 'none' ? existing.subscriptionTier : 'none';
         }
         const st = mapStripeSubStatus(sub.status);
-
-        if (tier !== 'none' && sub.metadata?.planKey !== tier) {
-          await stripe.subscriptions.update(sub.id, {
-            metadata: {
-              ...sub.metadata,
-              planKey: tier,
-            },
-          });
-        }
+        portalUpgradeDebug('subscription_updated_eval', {
+          stripeEventType: event.type,
+          stripeSubscriptionId: sub.id,
+          userId,
+          appTierBefore: existing?.subscriptionTier ?? 'none',
+          resolvedStripePlan: tier,
+          resolvedStatus: st,
+        });
 
         await patchUser(userId, {
           subscriptionStatus: st,
