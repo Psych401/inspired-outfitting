@@ -1,6 +1,6 @@
 /**
- * Client-only debug for post-Stripe redirect / session restore. Enable with:
- * NEXT_PUBLIC_AUTH_DEBUG_REDIRECTS=true
+ * Client-only debug for auth hydration (bootstrap, Stripe return, /api/me, billing).
+ * Enable with: NEXT_PUBLIC_AUTH_DEBUG_REDIRECTS=true
  * (Never log tokens or secrets.)
  */
 export function authRedirectDebug(message: string, meta: Record<string, unknown> = {}): void {

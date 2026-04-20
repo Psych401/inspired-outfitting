@@ -6,16 +6,9 @@ import { ensureUserProfile, getOrCreateUser, setStripeCustomer } from '@/lib/bil
 import { canPurchaseCreditPacks } from '@/lib/billing/subscription';
 import { checkBillingCheckoutLimit } from '@/lib/billing/rate-limit';
 import { auditLog } from '@/lib/billing/audit';
+import { getCanonicalAppOrigin } from '@/lib/app-url';
 
 export const runtime = 'nodejs';
-
-function appBaseUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.APP_BASE_URL?.trim();
-  if (explicit) return explicit.replace(/\/$/, '');
-  const v = process.env.VERCEL_URL;
-  if (v) return (v.startsWith('http') ? v : `https://${v}`).replace(/\/$/, '');
-  return 'http://localhost:3000';
-}
 
 export async function POST(request: NextRequest) {
   const stripe = getStripe();
@@ -82,7 +75,7 @@ export async function POST(request: NextRequest) {
     await setStripeCustomer(auth.sub, customerId);
   }
 
-  const base = appBaseUrl();
+  const base = getCanonicalAppOrigin();
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     customer: customerId,

@@ -7,6 +7,7 @@ import { normalizeSubscriptionPlanKey } from '@/lib/billing/plan-keys';
 import { auditLog } from '@/lib/billing/audit';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import { authRedirectDebug } from '@/lib/auth/redirect-debug';
+import { getCanonicalAppOrigin } from '@/lib/app-url';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -63,13 +64,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   >(async () => false);
   const applySessionUserRef = useRef<(session: Session) => void>(() => {});
 
-  const authHeaders = useCallback((): HeadersInit => {
-    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-  }, [accessToken]);
-
   const applySessionUser = useCallback((session: Session) => {
     const email = session.user.email;
     if (!email) return;
+    authRedirectDebug('user_set', { source: 'applySessionUser', userId: session.user.id });
     setUser({
       id: session.user.id,
       email,
@@ -124,14 +122,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           user?: { id?: string; email?: string; fullName?: string | null };
           billing?: Record<string, unknown>;
         };
-        if (!data.user?.id || !data.user?.email) return false;
+        if (!data.user?.id || !data.user?.email) {
+          authRedirectDebug('loadMe_invalid_payload');
+          return false;
+        }
         setUser({
           id: data.user.id,
           email: data.user.email,
           name: data.user.fullName?.trim() || data.user.email.split('@')[0] || 'Member',
         });
-        if (data.billing) setBilling(parseBillingPayload(data.billing));
-        authRedirectDebug('loadMe_ok', { attempt });
+        authRedirectDebug('user_set', { source: 'loadMe', userId: data.user.id });
+        if (data.billing) {
+          const snap = parseBillingPayload(data.billing);
+          setBilling(snap);
+          authRedirectDebug('billing_set', {
+            source: 'loadMe',
+            credits: snap.credits,
+            tier: snap.subscriptionTier,
+          });
+        }
+        authRedirectDebug('api_me_ok', { attempt });
         return true;
       }
       return false;
@@ -142,23 +152,47 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   loadMeRef.current = loadMe;
 
   const refreshBilling = useCallback(async () => {
+    const token = accessTokenRef.current?.trim() || null;
     if (!user) {
-      setBilling(emptyBilling());
+      // Do not wipe billing while a session token exists (bootstrap / Stripe return before user is applied).
+      if (!token) {
+        setBilling(emptyBilling());
+        authRedirectDebug('billing_cleared', { reason: 'no_user_no_token' });
+      } else {
+        authRedirectDebug('refreshBilling_skip', { reason: 'no_user_yet_has_token' });
+      }
+      return;
+    }
+    if (!token) {
+      authRedirectDebug('refreshBilling_skip', { reason: 'no_token_yet' });
       return;
     }
     setBilling((b) => ({ ...b, loading: true }));
     try {
-      const res = await fetch('/api/billing/me', { credentials: 'include', cache: 'no-store', headers: authHeaders() });
+      const res = await fetch('/api/billing/me', {
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (!res.ok) {
-        setBilling(emptyBilling());
+        authRedirectDebug('api_billing_me_failed', { status: res.status });
+        setBilling((b) => ({ ...b, loading: false }));
         return;
       }
       const data = (await res.json()) as Record<string, unknown>;
-      setBilling(parseBillingPayload(data));
-    } catch {
-      setBilling(emptyBilling());
+      const snap = parseBillingPayload(data);
+      setBilling(snap);
+      authRedirectDebug('billing_set', {
+        source: 'refreshBilling',
+        credits: snap.credits,
+        tier: snap.subscriptionTier,
+      });
+      authRedirectDebug('api_billing_me_ok', {});
+    } catch (e) {
+      authRedirectDebug('api_billing_me_error', { message: e instanceof Error ? e.message : 'unknown' });
+      setBilling((b) => ({ ...b, loading: false }));
     }
-  }, [user, authHeaders]);
+  }, [user]);
 
   const rehydrateAfterStripeReturn = useCallback(async (): Promise<boolean> => {
     authRedirectDebug('rehydrate_start', {
@@ -255,7 +289,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       if (session?.access_token) {
         setAccessToken(session.access_token);
-        await loadMeRef.current(session.access_token);
+        const ok = await loadMeRef.current(session.access_token);
+        if (!ok) applySessionUserRef.current(session);
       }
       if (!cancelled) setAuthHydrated(true);
       authRedirectDebug('bootstrap_done', { hydrated: true });
@@ -272,6 +307,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (event === 'SIGNED_OUT') {
+        authRedirectDebug('user_cleared', { reason: 'SIGNED_OUT' });
         setAccessToken(null);
         setUser(null);
         setBilling(emptyBilling());
@@ -299,8 +335,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const signUpWithPassword = useCallback(async (params: { email: string; password: string; fullName?: string }) => {
     const supabase = getSupabaseBrowserClient();
-    const origin =
-      typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_SITE_URL ?? '').replace(/\/$/, '');
+    const origin = getCanonicalAppOrigin();
     const emailRedirectTo = origin ? `${origin}/auth/callback?next=/pricing` : undefined;
     const { data, error } = await supabase.auth.signUp({
       email: params.email,
@@ -338,6 +373,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const logout = useCallback(async () => {
     const supabase = getSupabaseBrowserClient();
     await supabase.auth.signOut();
+    authRedirectDebug('user_cleared', { reason: 'logout' });
     setUser(null);
     setAccessToken(null);
     setBilling(emptyBilling());

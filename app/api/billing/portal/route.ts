@@ -3,16 +3,9 @@ import { requireSessionUser } from '@/lib/auth/require-user';
 import { getStripe } from '@/lib/billing/stripe-client';
 import { getUser } from '@/lib/billing/user-store';
 import { auditLog } from '@/lib/billing/audit';
+import { getCanonicalAppOrigin } from '@/lib/app-url';
 
 export const runtime = 'nodejs';
-
-function appBaseUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.APP_BASE_URL?.trim();
-  if (explicit) return explicit.replace(/\/$/, '');
-  const v = process.env.VERCEL_URL;
-  if (v) return (v.startsWith('http') ? v : `https://${v}`).replace(/\/$/, '');
-  return 'http://localhost:3000';
-}
 
 export async function POST(request: NextRequest) {
   const stripe = getStripe();
@@ -35,7 +28,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const returnUrl = `${appBaseUrl()}/profile?portal=return`;
+  const returnUrl = `${getCanonicalAppOrigin()}/profile?portal=return`;
   const session = await stripe.billingPortal.sessions.create({
     customer: customerId,
     return_url: returnUrl,

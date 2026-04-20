@@ -10,14 +10,7 @@ import { getCreditCostPerGeneration, refundCredits } from './credits';
 import { auditLog } from '@/lib/billing/audit';
 import { saveUserImage } from '@/lib/db/images-repo';
 import { getSupabaseServiceRoleClient } from '@/lib/supabase/server';
-
-function getPublicBaseUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL;
-  if (explicit) return explicit.replace(/\/$/, '');
-  const v = process.env.VERCEL_URL;
-  if (v) return v.startsWith('http') ? v.replace(/\/$/, '') : `https://${v.replace(/\/$/, '')}`;
-  return 'http://localhost:3000';
-}
+import { getCanonicalAppOrigin } from '@/lib/app-url';
 
 export async function runTryOnJob(
   job: TryOnJobRecord,
@@ -30,7 +23,7 @@ export async function runTryOnJob(
   await logJobEvent(job.id, 'info', 'processing_started');
 
   const webhookSecret = process.env.MODAL_WEBHOOK_SECRET ?? process.env.TRY_ON_WEBHOOK_SECRET ?? 'dev-secret-change-me';
-  const webhookUrl = `${getPublicBaseUrl()}/api/try-on/webhook`;
+  const webhookUrl = `${getCanonicalAppOrigin()}/api/try-on/webhook`;
 
   const provider = createGpuProvider();
   await logJobEvent(job.id, 'info', 'provider_selected', {
