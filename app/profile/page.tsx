@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import UploadedImagesGallery from '@/components/UploadedImagesGallery';
 import { PLAN_LABEL, type SubscriptionPlanKey } from '@/lib/billing/products';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 const DeleteIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>;
@@ -17,7 +18,6 @@ export default function ProfilePage() {
     user,
     authHydrated,
     billing,
-    refreshBilling,
     rehydrateAfterStripeReturn,
     getAccessToken,
     history,
@@ -28,26 +28,29 @@ export default function ProfilePage() {
     uploadedOutfitImages,
   } =
     useAuth();
-
-  useEffect(() => {
-    void refreshBilling();
-  }, [refreshBilling]);
+  const [isPortalReturnRehydrating, setIsPortalReturnRehydrating] = React.useState(false);
+  const isStripeReturnFlowActive =
+    typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
+      new URLSearchParams(window.location.search).get('portal') === 'return');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const q = new URLSearchParams(window.location.search);
     if (q.get('portal') === 'return') {
+      setIsPortalReturnRehydrating(true);
       void (async () => {
-        await rehydrateAfterStripeReturn();
-        await refreshBilling();
+        const ok = await rehydrateAfterStripeReturn();
+        authRedirectDebug('portal_return_rehydrate_result', { ok });
+        setIsPortalReturnRehydrating(false);
       })();
       q.delete('portal');
       const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
       window.history.replaceState({}, '', next);
     }
-  }, [refreshBilling, rehydrateAfterStripeReturn]);
+  }, [rehydrateAfterStripeReturn]);
 
-  if (!authHydrated) {
+  if (!authHydrated || isPortalReturnRehydrating) {
     return (
       <div className="container mx-auto px-6 py-24 text-center">
         <h1 className="text-2xl">Restoring your session...</h1>
@@ -67,7 +70,30 @@ export default function ProfilePage() {
   async function openSubscriptionPortal() {
     const token = await getAccessToken();
     if (!token) {
-      router.push('/auth');
+      if (authHydrated) {
+        authRedirectDebug('redirect_to_auth', {
+          from: 'profile:openSubscriptionPortal:no_token',
+          reason: 'getAccessToken_returned_null',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+        if (!isStripeReturnFlowActive) router.push('/auth');
+      } else {
+        authRedirectDebug('redirect_to_auth_deferred', {
+          from: 'profile:openSubscriptionPortal:no_token_not_hydrated',
+          reason: 'auth_not_hydrated',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+      }
       return;
     }
     const res = await fetch('/api/billing/portal', {

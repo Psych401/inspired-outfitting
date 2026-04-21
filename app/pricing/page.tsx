@@ -17,6 +17,7 @@ import {
   type SubscriptionPlanKey,
 } from '@/lib/billing/products';
 import type { SubscriptionStatus } from '@/lib/billing/user-store';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 
 const PricingCard: React.FC<{
   plan: string;
@@ -102,12 +103,12 @@ const AddOnCard: React.FC<{
 
 export default function PricingPage() {
   const router = useRouter();
-  const { user, authHydrated, billing, refreshBilling, ensureSession, getAccessToken } = useAuth();
+  const { user, authHydrated, billing, ensureSession, getAccessToken } = useAuth();
   const [checkoutLoading, setCheckoutLoading] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    void refreshBilling();
-  }, [refreshBilling]);
+  const isStripeReturnFlowActive =
+    typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
+      new URLSearchParams(window.location.search).get('portal') === 'return');
 
   const tierForPacks: SubscriptionPlanKey | 'none' =
     billing.subscriptionTier === 'none' ? 'none' : billing.subscriptionTier;
@@ -127,7 +128,30 @@ export default function PricingPage() {
   async function openSubscriptionPortal() {
     const token = await getAccessToken();
     if (!token) {
-      router.push('/auth');
+      if (authHydrated) {
+        authRedirectDebug('redirect_to_auth', {
+          from: 'pricing:openSubscriptionPortal:no_token',
+          reason: 'getAccessToken_returned_null',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+        if (!isStripeReturnFlowActive) router.push('/auth');
+      } else {
+        authRedirectDebug('redirect_to_auth_deferred', {
+          from: 'pricing:openSubscriptionPortal:no_token_not_hydrated',
+          reason: 'auth_not_hydrated',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+      }
       return;
     }
     const res = await fetch('/api/billing/portal', {
@@ -158,7 +182,30 @@ export default function PricingPage() {
     if (!user) {
       const restored = await ensureSession();
       if (!restored) {
-        router.push('/auth');
+        if (authHydrated) {
+          authRedirectDebug('redirect_to_auth', {
+            from: 'pricing:startSubscriptionCheckout:ensureSession_failed',
+            reason: 'ensureSession_returned_false',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+          if (!isStripeReturnFlowActive) router.push('/auth');
+        } else {
+          authRedirectDebug('redirect_to_auth_deferred', {
+            from: 'pricing:startSubscriptionCheckout:ensureSession_failed_not_hydrated',
+            reason: 'auth_not_hydrated',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+        }
         return;
       }
     }
@@ -171,7 +218,30 @@ export default function PricingPage() {
       }
       const token = await getAccessToken();
       if (!token) {
-        router.push('/auth');
+        if (authHydrated) {
+          authRedirectDebug('redirect_to_auth', {
+            from: 'pricing:startSubscriptionCheckout:no_token',
+            reason: 'getAccessToken_returned_null',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+          if (!isStripeReturnFlowActive) router.push('/auth');
+        } else {
+          authRedirectDebug('redirect_to_auth_deferred', {
+            from: 'pricing:startSubscriptionCheckout:no_token_not_hydrated',
+            reason: 'auth_not_hydrated',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+        }
         return;
       }
       const res = await fetch('/api/billing/checkout/subscription', {
@@ -197,7 +267,30 @@ export default function PricingPage() {
     if (!user) {
       const restored = await ensureSession();
       if (!restored) {
-        router.push('/auth');
+        if (authHydrated) {
+          authRedirectDebug('redirect_to_auth', {
+            from: 'pricing:startCreditPackCheckout:ensureSession_failed',
+            reason: 'ensureSession_returned_false',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+          if (!isStripeReturnFlowActive) router.push('/auth');
+        } else {
+          authRedirectDebug('redirect_to_auth_deferred', {
+            from: 'pricing:startCreditPackCheckout:ensureSession_failed_not_hydrated',
+            reason: 'auth_not_hydrated',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+        }
         return;
       }
     }
@@ -205,7 +298,30 @@ export default function PricingPage() {
     try {
       const token = await getAccessToken();
       if (!token) {
-        router.push('/auth');
+        if (authHydrated) {
+          authRedirectDebug('redirect_to_auth', {
+            from: 'pricing:startCreditPackCheckout:no_token',
+            reason: 'getAccessToken_returned_null',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+          if (!isStripeReturnFlowActive) router.push('/auth');
+        } else {
+          authRedirectDebug('redirect_to_auth_deferred', {
+            from: 'pricing:startCreditPackCheckout:no_token_not_hydrated',
+            reason: 'auth_not_hydrated',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated,
+            hasUser: !!user,
+            hasToken: false,
+            isStripeReturnFlowActive,
+          });
+        }
         return;
       }
       const res = await fetch('/api/billing/checkout/credits', {

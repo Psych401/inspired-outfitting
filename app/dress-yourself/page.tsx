@@ -7,6 +7,7 @@ import { UploadIcon, SparklesIcon, DownloadIcon } from '@/components/IconCompone
 import { useRouter } from 'next/navigation';
 import PreviousOutfits from '@/components/PreviousOutfits';
 import Link from 'next/link';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 import {
   isInvalidOnePiecePhotoType,
   type GarmentCategory,
@@ -226,20 +227,37 @@ export default function DressYourselfPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [isCheckoutReturnRehydrating, setIsCheckoutReturnRehydrating] = useState(false);
+  const isStripeReturnFlowActive =
+    typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
+      new URLSearchParams(window.location.search).get('portal') === 'return');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const q = new URLSearchParams(window.location.search);
+    authRedirectDebug('checkout_return_page_load', {
+      path: window.location.pathname,
+      search: window.location.search,
+      hasCheckoutSuccess: q.get('checkout') === 'success',
+    });
     if (q.get('checkout') === 'success') {
+      setIsCheckoutReturnRehydrating(true);
       void (async () => {
-        await rehydrateAfterStripeReturn();
-        await refreshBilling();
+        authRedirectDebug('checkout_return_rehydrate_start', {
+          path: window.location.pathname,
+          search: window.location.search,
+        });
+        const ok = await rehydrateAfterStripeReturn();
+        authRedirectDebug('checkout_return_rehydrate_result', { ok });
+        setIsCheckoutReturnRehydrating(false);
+        authRedirectDebug('checkout_return_rehydrate_done', {});
       })();
       q.delete('checkout');
       const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
       window.history.replaceState({}, '', next);
     }
-  }, [refreshBilling, rehydrateAfterStripeReturn]);
+  }, [rehydrateAfterStripeReturn]);
 
   useEffect(() => {
     const initFromRegenerate = async () => {
@@ -321,19 +339,57 @@ export default function DressYourselfPage() {
       setError('One-piece garments must use a model-worn garment image.');
       return;
     }
+    if (isCheckoutReturnRehydrating) {
+      setError('Restoring your session after checkout. Please wait a moment and try again.');
+      return;
+    }
 
     if (!isAuthenticated || !user?.email) {
       const restored = await ensureSession();
       if (!restored) {
         setError('Please sign in to use try-on.');
-        router.push('/auth');
+        authRedirectDebug('redirect_to_auth', {
+          from: 'dress-yourself:handleGenerate:ensureSession_failed',
+          reason: 'ensureSession_returned_false',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+        if (!isStripeReturnFlowActive) router.push('/auth');
         return;
       }
     }
     const token = await getAccessToken();
     if (!token) {
-      setError('Please sign in to use try-on.');
-      router.push('/auth');
+      if (authHydrated) {
+        setError('Please sign in to use try-on.');
+        authRedirectDebug('redirect_to_auth', {
+          from: 'dress-yourself:handleGenerate:no_token_after_getAccessToken',
+          reason: 'getAccessToken_returned_null',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+        if (!isStripeReturnFlowActive) router.push('/auth');
+      } else {
+        setError('Restoring your session, please try again.');
+        authRedirectDebug('redirect_to_auth_deferred', {
+          from: 'dress-yourself:handleGenerate:no_token_not_hydrated',
+          reason: 'auth_not_hydrated',
+          path: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          authHydrated,
+          hasUser: !!user,
+          hasToken: false,
+          isStripeReturnFlowActive,
+        });
+      }
       return;
     }
 
@@ -466,6 +522,7 @@ export default function DressYourselfPage() {
     getAccessToken,
     router,
     refreshBilling,
+    isCheckoutReturnRehydrating,
   ]);
 
   const handleSaveToHistory = useCallback(() => {
@@ -653,7 +710,7 @@ export default function DressYourselfPage() {
         </div>
       </div>
       
-       {!isAuthenticated && authHydrated && (
+       {!isAuthenticated && authHydrated && !isCheckoutReturnRehydrating && (
         <div className="mt-12 bg-soft-blush p-8 rounded-lg text-center">
           <h3 className="text-2xl font-heading mb-2">Unlock Unlimited Try-Ons</h3>
           <p className="mb-4">Sign up or log in to start generating your styles.</p>

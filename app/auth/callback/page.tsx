@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -11,6 +12,11 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     let cancelled = false;
     const next = search?.get('next') || '/pricing';
+    authRedirectDebug('auth_callback_page_load', {
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+      next,
+    });
 
     const run = async () => {
       const supabase = getSupabaseBrowserClient();
@@ -28,7 +34,18 @@ export default function AuthCallbackPage() {
         }
       } catch {
         // Fallback to auth page if callback exchange fails.
-        if (!cancelled) router.replace('/auth');
+        if (!cancelled) {
+          authRedirectDebug('redirect_to_auth', {
+            from: 'auth/callback:exchange_failed',
+            reason: 'exchange_code_or_set_session_failed',
+            path: typeof window !== 'undefined' ? window.location.pathname : '',
+            search: typeof window !== 'undefined' ? window.location.search : '',
+            authHydrated: null,
+            hasUser: null,
+            hasToken: null,
+          });
+          router.replace('/auth');
+        }
         return;
       }
       if (!cancelled) router.replace(next);

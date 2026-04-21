@@ -10,7 +10,7 @@ import { PLAN_LABEL, type SubscriptionPlanKey } from '@/lib/billing/products';
 import type { SubscriptionStatus } from '@/lib/billing/user-store';
 
 const Header: React.FC = () => {
-  const { isAuthenticated, user, logout, billing, refreshBilling } = useAuth();
+  const { isAuthenticated, authHydrated, user, logout, billing } = useAuth();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
@@ -78,7 +78,6 @@ const Header: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  void refreshBilling();
                   router.push(creditsHref);
                 }}
                 className="inline-flex items-center rounded-full border border-dusty-rose/40 bg-soft-blush/60 px-3 py-1 text-xs font-semibold text-charcoal-grey shadow-sm transition hover:bg-soft-blush hover:border-dusty-rose/60"
@@ -94,13 +93,18 @@ const Header: React.FC = () => {
                 Logout
               </button>
             </div>
-          ) : (
+          ) : authHydrated ? (
             <Link
               href="/auth"
+              prefetch={false}
               className="bg-dusty-rose text-white px-4 py-2 rounded-full hover:bg-opacity-80 transition-all duration-300"
             >
               Login / Sign Up
             </Link>
+          ) : (
+            <span className="inline-flex rounded-full border border-dusty-rose/30 px-4 py-2 text-sm text-charcoal-grey/60">
+              Restoring session...
+            </span>
           )}
         </nav>
         <div className="md:hidden">
@@ -119,7 +123,6 @@ const Header: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setIsMenuOpen(false);
-                    void refreshBilling();
                     router.push(creditsHref);
                   }}
                   className="inline-flex items-center rounded-full border border-dusty-rose/40 bg-soft-blush/60 px-3 py-1 text-xs font-semibold text-charcoal-grey"
@@ -134,14 +137,17 @@ const Header: React.FC = () => {
                   Logout
                 </button>
               </div>
-            ) : (
+            ) : authHydrated ? (
               <Link
                 href="/auth"
+                prefetch={false}
                 onClick={() => setIsMenuOpen(false)}
                 className="bg-dusty-rose text-white w-full px-4 py-2 rounded-full hover:bg-opacity-80 transition-all duration-300 text-center"
               >
                 Login / Sign Up
               </Link>
+            ) : (
+              <span className="text-sm text-charcoal-grey/60">Restoring session...</span>
             )}
           </nav>
         </div>

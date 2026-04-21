@@ -58,6 +58,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const accessTokenRef = useRef<string | null>(null);
   accessTokenRef.current = accessToken;
+  const billingRequestInFlightRef = useRef(false);
+  const lastBillingRefreshAtRef = useRef(0);
 
   const loadMeRef = useRef<
     (tokenOverride?: string | null) => Promise<boolean>
@@ -93,6 +95,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         authRedirectDebug('loadMe_attempt', {
           attempt,
           callingApiMe: true,
+          callingApiMeWithAuthorizationHeader: !!authToken,
           tokenSource: tokenOverride != null ? 'explicit' : 'ref',
         });
         const res = await fetch('/api/me', {
@@ -167,6 +170,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       authRedirectDebug('refreshBilling_skip', { reason: 'no_token_yet' });
       return;
     }
+    const now = Date.now();
+    if (billingRequestInFlightRef.current) {
+      authRedirectDebug('refreshBilling_skip', { reason: 'in_flight' });
+      return;
+    }
+    if (now - lastBillingRefreshAtRef.current < 1200) {
+      authRedirectDebug('refreshBilling_skip', { reason: 'recently_refreshed' });
+      return;
+    }
+    billingRequestInFlightRef.current = true;
+    lastBillingRefreshAtRef.current = now;
     setBilling((b) => ({ ...b, loading: true }));
     try {
       const res = await fetch('/api/billing/me', {
@@ -191,10 +205,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (e) {
       authRedirectDebug('api_billing_me_error', { message: e instanceof Error ? e.message : 'unknown' });
       setBilling((b) => ({ ...b, loading: false }));
+    } finally {
+      billingRequestInFlightRef.current = false;
     }
   }, [user]);
 
   const rehydrateAfterStripeReturn = useCallback(async (): Promise<boolean> => {
+    setAuthHydrated(false);
+    authRedirectDebug('checkout_return_session_state', {
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+      isCheckoutReturn:
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('checkout') === 'success',
+      phase: 'start',
+    });
     authRedirectDebug('rehydrate_start', {
       path: typeof window !== 'undefined' ? window.location.pathname : '',
       search: typeof window !== 'undefined' ? window.location.search : '',
@@ -208,6 +233,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         hasAccess: !!session?.access_token,
         hasRefresh: !!session?.refresh_token,
       });
+      authRedirectDebug('checkout_return_session_state', {
+        phase: 'after_getSession',
+        hasAccess: !!session?.access_token,
+        hasRefresh: !!session?.refresh_token,
+      });
       if (!session?.access_token && session?.refresh_token) {
         const { data, error } = await supabase.auth.refreshSession();
         session = data.session ?? session;
@@ -215,9 +245,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           hasAccess: !!session?.access_token,
           refreshError: error?.message,
         });
+        authRedirectDebug('checkout_return_session_state', {
+          phase: 'after_refreshSession',
+          hasAccess: !!session?.access_token,
+          hasRefresh: !!session?.refresh_token,
+          refreshError: error?.message ?? null,
+        });
       }
       if (!session?.access_token) {
         authRedirectDebug('rehydrate_abort_no_session');
+        authRedirectDebug('checkout_return_session_state', {
+          phase: 'abort_no_session',
+          reasonLoggedOut: 'no_access_token_after_getSession_and_refreshSession',
+        });
+        setAuthHydrated(true);
         return false;
       }
       setAccessToken(session.access_token);
@@ -226,10 +267,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!ok) {
         applySessionUserRef.current(session);
         auditLog('post_checkout_session_restored', { userId: session.user.id, mode: 'partial', context: 'stripe_return' });
+        authRedirectDebug('checkout_return_session_state', {
+          phase: 'partial_user_applied',
+          reasonLoggedOut: null,
+          note: 'session_exists_api_me_failed_transiently',
+        });
       }
+      setAuthHydrated(true);
+      authRedirectDebug('checkout_return_session_state', {
+        phase: 'done',
+        restored: true,
+      });
       return true;
     } catch (e) {
       authRedirectDebug('rehydrate_error', { message: e instanceof Error ? e.message : 'unknown' });
+      authRedirectDebug('checkout_return_session_state', {
+        phase: 'error',
+        restored: false,
+        reasonLoggedOut: e instanceof Error ? e.message : 'unknown',
+      });
+      setAuthHydrated(true);
       return false;
     }
   }, []);
@@ -237,24 +294,45 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const ensureSession = useCallback(async (): Promise<boolean> => {
     try {
       const supabase = getSupabaseBrowserClient();
-      let {
-        data: { session },
-        error,
-      } = await supabase.auth.getSession();
-      if (error) return false;
-      if (!session?.access_token && session?.refresh_token) {
-        const { data } = await supabase.auth.refreshSession();
-        session = data.session ?? session;
-      }
-      if (!session?.access_token) return false;
-      setAccessToken(session.access_token);
-      const ok = await loadMeRef.current(session.access_token);
-      if (ok) auditLog('post_checkout_session_restored', { userId: session.user.id });
-      if (!ok) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+        if (error) {
+          authRedirectDebug('ensureSession_failed', { reason: 'getSession_error', message: error.message, attempt });
+          return false;
+        }
+        if (!session?.access_token && session?.refresh_token) {
+          const { data, error: refreshError } = await supabase.auth.refreshSession();
+          session = data.session ?? session;
+          authRedirectDebug('ensureSession_refreshSession', {
+            attempt,
+            hasAccess: !!session?.access_token,
+            hasRefresh: !!session?.refresh_token,
+            refreshError: refreshError?.message ?? null,
+          });
+        }
+        if (!session?.access_token) {
+          authRedirectDebug('ensureSession_retry_wait', {
+            attempt,
+            reason: 'no_access_token_yet',
+          });
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          continue;
+        }
+        setAccessToken(session.access_token);
+        const ok = await loadMeRef.current(session.access_token);
+        if (ok) {
+          auditLog('post_checkout_session_restored', { userId: session.user.id });
+          return true;
+        }
+        // Prevent false logout redirects after Stripe return: preserve signed-in fallback user.
         applySessionUserRef.current(session);
         auditLog('post_checkout_session_restored', { userId: session.user.id, mode: 'partial' });
+        return true;
       }
-      return true;
+      return false;
     } catch {
       return false;
     }
