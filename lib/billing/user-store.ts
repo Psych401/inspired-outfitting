@@ -283,15 +283,19 @@ export async function patchUser(userId: string, patch: Partial<UserBillingRecord
   const cur = await getOrCreateUser(userId);
   const supabase = getSupabaseServiceRoleClient();
   const id = normalizeUserId(userId);
+  const updateRow: Record<string, unknown> = {
+    subscription_tier: patch.subscriptionTier ?? cur.subscriptionTier,
+    subscription_status: patch.subscriptionStatus ?? cur.subscriptionStatus,
+    stripe_customer_id: patch.stripeCustomerId ?? cur.stripeCustomerId ?? null,
+    stripe_subscription_id: patch.stripeSubscriptionId ?? cur.stripeSubscriptionId ?? null,
+  };
+  // Defensive: never rewrite credits unless an explicit credit patch was requested.
+  if (patch.credits !== undefined) {
+    updateRow.credit_balance = patch.credits;
+  }
   const { data, error } = await supabase
     .from('user_billing_state')
-    .update({
-      credit_balance: patch.credits ?? cur.credits,
-      subscription_tier: patch.subscriptionTier ?? cur.subscriptionTier,
-      subscription_status: patch.subscriptionStatus ?? cur.subscriptionStatus,
-      stripe_customer_id: patch.stripeCustomerId ?? cur.stripeCustomerId ?? null,
-      stripe_subscription_id: patch.stripeSubscriptionId ?? cur.stripeSubscriptionId ?? null,
-    })
+    .update(updateRow)
     .eq('user_id', id)
     .select('*')
     .single();

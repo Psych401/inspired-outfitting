@@ -35,7 +35,7 @@ export default function AuthCallbackPage() {
       } catch {
         // Fallback to auth page if callback exchange fails.
         if (!cancelled) {
-          authRedirectDebug('redirect_to_auth', {
+          authRedirectDebug('redirect_to_auth_exact_source', {
             from: 'auth/callback:exchange_failed',
             reason: 'exchange_code_or_set_session_failed',
             path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -43,6 +43,8 @@ export default function AuthCallbackPage() {
             authHydrated: null,
             hasUser: null,
             hasToken: null,
+            isCheckoutSuccessReturn: false,
+            isPortalReturn: false,
           });
           router.replace('/auth');
         }

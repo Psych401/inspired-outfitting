@@ -41,6 +41,10 @@ export async function runTryOnJob(
     direct_vton_without_preprocessing: true,
     background_removal_active: false,
   });
+  console.log('[try-on][lifecycle] provider_submit_started', {
+    jobId: job.id,
+    provider: provider.name,
+  });
 
   try {
     const result = await provider.submit({
@@ -85,6 +89,15 @@ export async function runTryOnJob(
     await store.update(job.id, {
       providerJobId: result.providerJobId ?? job.id,
     });
+    console.log('[try-on][lifecycle] provider_submit_acknowledged', {
+      jobId: job.id,
+      provider: provider.name,
+      providerJobId: result.providerJobId ?? job.id,
+    });
+    console.log('[try-on][lifecycle] job_marked_processing_pending_webhook', {
+      jobId: job.id,
+      providerJobId: result.providerJobId ?? job.id,
+    });
     console.log('[try-on][orchestrator] async_dispatched', {
       jobId: job.id,
       providerJobId: result.providerJobId ?? job.id,
@@ -95,6 +108,33 @@ export async function runTryOnJob(
     });
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
+    const timedOutNonTerminal =
+      err.name === 'AbortError' ||
+      /aborted|aborterror|operation was aborted|timed out/i.test(err.message);
+    if (timedOutNonTerminal) {
+      await store.update(job.id, {
+        status: 'processing',
+      });
+      console.warn('[try-on][lifecycle] provider_submit_timed_out_nonterminal', {
+        jobId: job.id,
+        provider: provider.name,
+        message: err.message,
+      });
+      await logJobEvent(job.id, 'warn', 'provider_submit_timed_out_nonterminal', {
+        provider: provider.name,
+        message: err.message,
+      });
+      console.log('[try-on][lifecycle] job_marked_processing_pending_webhook', {
+        jobId: job.id,
+        reason: 'submit_timeout_nonterminal',
+      });
+      return;
+    }
+    console.error('[try-on][lifecycle] provider_submit_failed_terminal', {
+      jobId: job.id,
+      provider: provider.name,
+      message: err.message,
+    });
     const cost = job.creditCostDebited ?? getCreditCostPerGeneration();
     let refundIssued = false;
     if (
@@ -113,6 +153,11 @@ export async function runTryOnJob(
         const row = Array.isArray(data) ? data[0] : data;
         refundIssued = Boolean(row?.refunded);
         if (refundIssued) {
+          console.log('[try-on][lifecycle] credit_refund_terminal_failure', {
+            jobId: job.id,
+            reason: 'gpu_submit_failed',
+            amount: cost,
+          });
           auditLog('credits_restored', {
             userId: job.userId,
             amount: cost,
@@ -127,6 +172,11 @@ export async function runTryOnJob(
           jobId: job.id,
         });
         refundIssued = true;
+        console.log('[try-on][lifecycle] credit_refund_terminal_failure', {
+          jobId: job.id,
+          reason: 'gpu_submit_failed_fallback',
+          amount: cost,
+        });
       }
     }
     await store.update(job.id, {
@@ -134,6 +184,12 @@ export async function runTryOnJob(
       error: err.message,
       errorCode: 'GPU_SUBMIT_FAILED',
       ...(refundIssued ? { creditRefundIssued: true } : {}),
+    });
+    console.error('[try-on][lifecycle] job_marked_failed_terminal', {
+      jobId: job.id,
+      errorCode: 'GPU_SUBMIT_FAILED',
+      message: err.message,
+      refundIssued,
     });
     const updated = await store.get(job.id);
     if (updated) {

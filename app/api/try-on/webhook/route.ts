@@ -95,6 +95,20 @@ export async function POST(request: NextRequest) {
   const t0 = Date.now();
 
   if (body.status === 'failed' || body.error) {
+    if (job.status === 'succeeded') {
+      console.warn('[try-on][lifecycle] webhook_failed_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_succeeded' });
+    }
+    if (job.status === 'failed') {
+      console.warn('[try-on][lifecycle] webhook_failed_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_failed' });
+    }
     if (job.userId) {
       const supabase = getSupabaseServiceRoleClient();
       const { data, error } = await supabase.rpc('app_refund_job_credit_once', {
@@ -105,6 +119,10 @@ export async function POST(request: NextRequest) {
       if (!error) {
         const row = Array.isArray(data) ? data[0] : data;
         if (row?.refunded) {
+          console.log('[try-on][lifecycle] credit_refund_terminal_failure', {
+            jobId: body.jobId,
+            reason: 'gpu_webhook_failed',
+          });
           auditLog('credits_restored', { userId: job.userId, jobId: job.id, reason: 'gpu_webhook_failed' });
         }
       }
@@ -114,6 +132,11 @@ export async function POST(request: NextRequest) {
       error: body.error ?? 'GPU reported failure',
       errorCode: 'GPU_FAILED',
       gpuDurationMs: body.gpuDurationMs,
+    });
+    console.error('[try-on][lifecycle] job_marked_failed_terminal', {
+      jobId: body.jobId,
+      errorCode: 'GPU_FAILED',
+      message: body.error ?? 'GPU reported failure',
     });
     const updated = await store.get(body.jobId);
     if (updated) {
@@ -131,6 +154,20 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.resultBase64) {
+    if (job.status === 'failed') {
+      console.warn('[try-on][lifecycle] webhook_success_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_failed' });
+    }
+    if (job.status === 'succeeded') {
+      console.warn('[try-on][lifecycle] webhook_success_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_succeeded' });
+    }
     if (!job.userId) {
       return NextResponse.json({ error: 'Job missing user context' }, { status: 500 });
     }
@@ -151,6 +188,10 @@ export async function POST(request: NextRequest) {
       gpuDurationMs: body.gpuDurationMs,
       completedAt: Date.now(),
     });
+    console.log('[try-on][lifecycle] webhook_success_applied', {
+      jobId: body.jobId,
+      mode: 'base64',
+    });
     const updated = await store.get(body.jobId);
     if (updated) {
       await recordMetrics(updated, { success: true, gpuDurationMs: body.gpuDurationMs });
@@ -167,6 +208,20 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.resultUrl) {
+    if (job.status === 'failed') {
+      console.warn('[try-on][lifecycle] webhook_success_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_failed' });
+    }
+    if (job.status === 'succeeded') {
+      console.warn('[try-on][lifecycle] webhook_success_ignored_due_to_terminal_conflict', {
+        jobId: body.jobId,
+        currentStatus: job.status,
+      });
+      return NextResponse.json({ ok: true, ignored: true, reason: 'already_succeeded' });
+    }
     if (job.userId) {
       try {
         const response = await fetch(body.resultUrl);
@@ -193,6 +248,10 @@ export async function POST(request: NextRequest) {
       resultUrl: body.resultUrl,
       gpuDurationMs: body.gpuDurationMs,
       completedAt: Date.now(),
+    });
+    console.log('[try-on][lifecycle] webhook_success_applied', {
+      jobId: body.jobId,
+      mode: 'url',
     });
     const updated = await store.get(body.jobId);
     if (updated) {

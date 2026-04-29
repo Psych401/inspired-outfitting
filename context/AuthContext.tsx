@@ -8,6 +8,7 @@ import { auditLog } from '@/lib/billing/audit';
 import { getSupabaseBrowserClient } from '@/lib/supabase/browser';
 import { authRedirectDebug } from '@/lib/auth/redirect-debug';
 import { getCanonicalAppOrigin } from '@/lib/app-url';
+import { isStripeReturnRestoreActive } from '@/lib/auth/stripe-return-restore';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -156,11 +157,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const refreshBilling = useCallback(async () => {
     const token = accessTokenRef.current?.trim() || null;
+    const restoring = isStripeReturnRestoreActive();
     if (!user) {
       // Do not wipe billing while a session token exists (bootstrap / Stripe return before user is applied).
       if (!token) {
-        setBilling(emptyBilling());
-        authRedirectDebug('billing_cleared', { reason: 'no_user_no_token' });
+        if (!restoring) {
+          setBilling(emptyBilling());
+          authRedirectDebug('billing_cleared', { reason: 'no_user_no_token' });
+        } else {
+          authRedirectDebug('stripe_return_auth_ui_blocked', { from: 'auth-context:refreshBilling:no_user_no_token' });
+        }
       } else {
         authRedirectDebug('refreshBilling_skip', { reason: 'no_user_yet_has_token' });
       }
@@ -385,6 +391,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (event === 'SIGNED_OUT') {
+        if (isStripeReturnRestoreActive()) {
+          authRedirectDebug('stripe_return_auth_ui_blocked', { from: 'auth-context:onAuthStateChange:SIGNED_OUT' });
+          return;
+        }
         authRedirectDebug('user_cleared', { reason: 'SIGNED_OUT' });
         setAccessToken(null);
         setUser(null);

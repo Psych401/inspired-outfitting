@@ -17,6 +17,7 @@ type AuditEvent =
   | 'credits_deducted'
   | 'credits_restored'
   | 'subscription_status_changed'
+  | 'subscription_state_update_balance_check'
   | 'invoice_payment_failed'
   | 'invoice_payment_action_required'
   | 'invoice_finalization_failed';

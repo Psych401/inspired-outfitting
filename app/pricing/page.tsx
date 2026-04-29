@@ -105,10 +105,13 @@ export default function PricingPage() {
   const router = useRouter();
   const { user, authHydrated, billing, ensureSession, getAccessToken } = useAuth();
   const [checkoutLoading, setCheckoutLoading] = React.useState<string | null>(null);
-  const isStripeReturnFlowActive =
+  const isCheckoutSuccessReturn =
     typeof window !== 'undefined' &&
     (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
-      new URLSearchParams(window.location.search).get('portal') === 'return');
+      window.sessionStorage.getItem('stripe_checkout_return_rehydrating') === '1');
+  const isPortalReturn =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('portal') === 'return';
+  const isStripeReturnFlowActive = isCheckoutSuccessReturn || isPortalReturn;
 
   const tierForPacks: SubscriptionPlanKey | 'none' =
     billing.subscriptionTier === 'none' ? 'none' : billing.subscriptionTier;
@@ -116,6 +119,19 @@ export default function PricingPage() {
   const packsAllowed =
     !!user &&
     canPurchaseCreditPacks(billing.subscriptionStatus as SubscriptionStatus, tierForPacks);
+
+  React.useEffect(() => {
+    if (!authHydrated || !!user) return;
+    authRedirectDebug('auth_ui_rendered', {
+      from: 'pricing:logged_out_cta',
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+      authHydrated,
+      hasUser: !!user,
+      hasToken: false,
+      isCheckoutSuccessReturn,
+    });
+  }, [authHydrated, user, isCheckoutSuccessReturn]);
 
   const currentActiveTier: SubscriptionPlanKey | null =
     billing.subscriptionTier !== 'none' &&
@@ -129,7 +145,7 @@ export default function PricingPage() {
     const token = await getAccessToken();
     if (!token) {
       if (authHydrated) {
-        authRedirectDebug('redirect_to_auth', {
+        authRedirectDebug('redirect_to_auth_exact_source', {
           from: 'pricing:openSubscriptionPortal:no_token',
           reason: 'getAccessToken_returned_null',
           path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -137,7 +153,8 @@ export default function PricingPage() {
           authHydrated,
           hasUser: !!user,
           hasToken: false,
-          isStripeReturnFlowActive,
+          isCheckoutSuccessReturn,
+          isPortalReturn,
         });
         if (!isStripeReturnFlowActive) router.push('/auth');
       } else {
@@ -183,7 +200,7 @@ export default function PricingPage() {
       const restored = await ensureSession();
       if (!restored) {
         if (authHydrated) {
-          authRedirectDebug('redirect_to_auth', {
+          authRedirectDebug('redirect_to_auth_exact_source', {
             from: 'pricing:startSubscriptionCheckout:ensureSession_failed',
             reason: 'ensureSession_returned_false',
             path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -191,7 +208,8 @@ export default function PricingPage() {
             authHydrated,
             hasUser: !!user,
             hasToken: false,
-            isStripeReturnFlowActive,
+            isCheckoutSuccessReturn,
+            isPortalReturn,
           });
           if (!isStripeReturnFlowActive) router.push('/auth');
         } else {
@@ -219,7 +237,7 @@ export default function PricingPage() {
       const token = await getAccessToken();
       if (!token) {
         if (authHydrated) {
-          authRedirectDebug('redirect_to_auth', {
+          authRedirectDebug('redirect_to_auth_exact_source', {
             from: 'pricing:startSubscriptionCheckout:no_token',
             reason: 'getAccessToken_returned_null',
             path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -227,7 +245,8 @@ export default function PricingPage() {
             authHydrated,
             hasUser: !!user,
             hasToken: false,
-            isStripeReturnFlowActive,
+            isCheckoutSuccessReturn,
+            isPortalReturn,
           });
           if (!isStripeReturnFlowActive) router.push('/auth');
         } else {
@@ -268,7 +287,7 @@ export default function PricingPage() {
       const restored = await ensureSession();
       if (!restored) {
         if (authHydrated) {
-          authRedirectDebug('redirect_to_auth', {
+          authRedirectDebug('redirect_to_auth_exact_source', {
             from: 'pricing:startCreditPackCheckout:ensureSession_failed',
             reason: 'ensureSession_returned_false',
             path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -276,7 +295,8 @@ export default function PricingPage() {
             authHydrated,
             hasUser: !!user,
             hasToken: false,
-            isStripeReturnFlowActive,
+            isCheckoutSuccessReturn,
+            isPortalReturn,
           });
           if (!isStripeReturnFlowActive) router.push('/auth');
         } else {
@@ -299,7 +319,7 @@ export default function PricingPage() {
       const token = await getAccessToken();
       if (!token) {
         if (authHydrated) {
-          authRedirectDebug('redirect_to_auth', {
+          authRedirectDebug('redirect_to_auth_exact_source', {
             from: 'pricing:startCreditPackCheckout:no_token',
             reason: 'getAccessToken_returned_null',
             path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -307,7 +327,8 @@ export default function PricingPage() {
             authHydrated,
             hasUser: !!user,
             hasToken: false,
-            isStripeReturnFlowActive,
+            isCheckoutSuccessReturn,
+            isPortalReturn,
           });
           if (!isStripeReturnFlowActive) router.push('/auth');
         } else {
@@ -461,7 +482,24 @@ export default function PricingPage() {
             <div className="max-w-3xl mx-auto text-center p-8 border-2 border-dashed border-gray-300 rounded-xl">
               <h3 className="text-xl font-semibold text-charcoal-grey/60">Credit packs</h3>
               <p className="text-charcoal-grey/50 mt-2">Sign in and subscribe to purchase one-time credit packs.</p>
-              <Button onClick={() => router.push('/auth')} variant="secondary" className="mt-4">
+              <Button
+                onClick={() => {
+                  authRedirectDebug('redirect_to_auth_exact_source', {
+                    from: 'pricing:logged_out_cta_button',
+                    reason: 'user_clicked_login_cta',
+                    path: typeof window !== 'undefined' ? window.location.pathname : '',
+                    search: typeof window !== 'undefined' ? window.location.search : '',
+                    authHydrated,
+                    hasUser: !!user,
+                    hasToken: false,
+                    isCheckoutSuccessReturn,
+                    isPortalReturn,
+                  });
+                  router.push('/auth');
+                }}
+                variant="secondary"
+                className="mt-4"
+              >
                 Login
               </Button>
             </div>

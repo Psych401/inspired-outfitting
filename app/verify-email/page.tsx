@@ -37,7 +37,7 @@ function VerifyEmailContent() {
           Didn&apos;t get it? Check spam or promotions. You can request a new link from the sign-in page after a few minutes.
         </div>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
-          <Link href="/auth" className="w-full sm:w-auto">
+          <Link href="/auth" prefetch={false} className="w-full sm:w-auto">
             <Button variant="primary" className="w-full">
               Back to sign in
             </Button>

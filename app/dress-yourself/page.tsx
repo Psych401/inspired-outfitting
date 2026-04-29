@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import PreviousOutfits from '@/components/PreviousOutfits';
 import Link from 'next/link';
 import { authRedirectDebug } from '@/lib/auth/redirect-debug';
+import { finishStripeReturnRestore, isStripeReturnRestoreActive, startStripeReturnRestore } from '@/lib/auth/stripe-return-restore';
 import {
   isInvalidOnePiecePhotoType,
   type GarmentCategory,
@@ -221,6 +222,7 @@ export default function DressYourselfPage() {
   const [garmentCategory, setGarmentCategory] = useState<GarmentCategory | null>(null);
   const [garmentPhotoType, setGarmentPhotoType] = useState<GarmentPhotoType | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [generatedJobId, setGeneratedJobId] = useState<string | null>(null);
   type GenPhase = 'idle' | 'submitting' | 'generating';
   const [genPhase, setGenPhase] = useState<GenPhase>('idle');
   const isBusy = genPhase !== 'idle';
@@ -228,10 +230,13 @@ export default function DressYourselfPage() {
   const [isSaved, setIsSaved] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isCheckoutReturnRehydrating, setIsCheckoutReturnRehydrating] = useState(false);
-  const isStripeReturnFlowActive =
+  const isCheckoutSuccessReturn =
     typeof window !== 'undefined' &&
     (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
-      new URLSearchParams(window.location.search).get('portal') === 'return');
+      isStripeReturnRestoreActive());
+  const isPortalReturn =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('portal') === 'return';
+  const isStripeReturnFlowActive = isCheckoutSuccessReturn || isPortalReturn;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -243,21 +248,43 @@ export default function DressYourselfPage() {
     });
     if (q.get('checkout') === 'success') {
       setIsCheckoutReturnRehydrating(true);
+      startStripeReturnRestore();
+      authRedirectDebug('stripe_return_restore_started', {
+        from: 'dress-yourself:checkout_success',
+        path: window.location.pathname,
+        search: window.location.search,
+      });
       void (async () => {
         authRedirectDebug('checkout_return_rehydrate_start', {
           path: window.location.pathname,
           search: window.location.search,
         });
         const ok = await rehydrateAfterStripeReturn();
+        if (ok) {
+          await refreshBilling();
+        }
         authRedirectDebug('checkout_return_rehydrate_result', { ok });
         setIsCheckoutReturnRehydrating(false);
+        finishStripeReturnRestore();
+        authRedirectDebug(ok ? 'stripe_return_restore_succeeded' : 'stripe_return_restore_failed', {
+          from: 'dress-yourself:checkout_success',
+          path: window.location.pathname,
+          search: window.location.search,
+        });
+        authRedirectDebug('checkout_return_final_result', {
+          restored: ok,
+          hasUser: !!user,
+          hasToken: !!(await getAccessToken()),
+          authHydrated,
+          willRenderLoggedOutUi: authHydrated && !isAuthenticated && !isCheckoutReturnRehydrating && !ok,
+        });
         authRedirectDebug('checkout_return_rehydrate_done', {});
       })();
       q.delete('checkout');
       const next = `${window.location.pathname}${q.toString() ? `?${q}` : ''}`;
       window.history.replaceState({}, '', next);
     }
-  }, [rehydrateAfterStripeReturn]);
+  }, [rehydrateAfterStripeReturn, refreshBilling, user, getAccessToken, authHydrated, isAuthenticated, isCheckoutReturnRehydrating]);
 
   useEffect(() => {
     const initFromRegenerate = async () => {
@@ -317,6 +344,28 @@ export default function DressYourselfPage() {
       !hasInvalidOnePiecePhotoType &&
       !isBusy
   );
+
+  useEffect(() => {
+    if (!authHydrated || isAuthenticated || isCheckoutReturnRehydrating) return;
+    if (isCheckoutSuccessReturn) {
+      authRedirectDebug('stripe_return_auth_ui_blocked', {
+        from: 'dress-yourself:logged_out_cta_effect',
+        path: typeof window !== 'undefined' ? window.location.pathname : '',
+        search: typeof window !== 'undefined' ? window.location.search : '',
+      });
+      return;
+    }
+    authRedirectDebug('auth_ui_rendered', {
+      from: 'dress-yourself:logged_out_cta',
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+      authHydrated,
+      hasUser: !!user,
+      hasToken: false,
+      isCheckoutSuccessReturn:
+        isCheckoutSuccessReturn,
+    });
+  }, [authHydrated, isAuthenticated, isCheckoutReturnRehydrating, user, isCheckoutSuccessReturn]);
   
   const handleGenerate = useCallback(async () => {
     setSubmitAttempted(true);
@@ -348,7 +397,7 @@ export default function DressYourselfPage() {
       const restored = await ensureSession();
       if (!restored) {
         setError('Please sign in to use try-on.');
-        authRedirectDebug('redirect_to_auth', {
+        authRedirectDebug('redirect_to_auth_exact_source', {
           from: 'dress-yourself:handleGenerate:ensureSession_failed',
           reason: 'ensureSession_returned_false',
           path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -356,9 +405,15 @@ export default function DressYourselfPage() {
           authHydrated,
           hasUser: !!user,
           hasToken: false,
-          isStripeReturnFlowActive,
+          isCheckoutSuccessReturn,
+          isPortalReturn,
         });
-        if (!isStripeReturnFlowActive) router.push('/auth');
+        if (!isStripeReturnFlowActive) {
+          authRedirectDebug('stripe_return_redirect_actual', { from: 'dress-yourself:ensureSession_failed' });
+          router.push('/auth');
+        } else {
+          authRedirectDebug('stripe_return_redirect_blocked', { from: 'dress-yourself:ensureSession_failed' });
+        }
         return;
       }
     }
@@ -366,7 +421,7 @@ export default function DressYourselfPage() {
     if (!token) {
       if (authHydrated) {
         setError('Please sign in to use try-on.');
-        authRedirectDebug('redirect_to_auth', {
+        authRedirectDebug('redirect_to_auth_exact_source', {
           from: 'dress-yourself:handleGenerate:no_token_after_getAccessToken',
           reason: 'getAccessToken_returned_null',
           path: typeof window !== 'undefined' ? window.location.pathname : '',
@@ -374,9 +429,15 @@ export default function DressYourselfPage() {
           authHydrated,
           hasUser: !!user,
           hasToken: false,
-          isStripeReturnFlowActive,
+          isCheckoutSuccessReturn,
+          isPortalReturn,
         });
-        if (!isStripeReturnFlowActive) router.push('/auth');
+        if (!isStripeReturnFlowActive) {
+          authRedirectDebug('stripe_return_redirect_actual', { from: 'dress-yourself:no_token_after_getAccessToken' });
+          router.push('/auth');
+        } else {
+          authRedirectDebug('stripe_return_redirect_blocked', { from: 'dress-yourself:no_token_after_getAccessToken' });
+        }
       } else {
         setError('Restoring your session, please try again.');
         authRedirectDebug('redirect_to_auth_deferred', {
@@ -387,7 +448,8 @@ export default function DressYourselfPage() {
           authHydrated,
           hasUser: !!user,
           hasToken: false,
-          isStripeReturnFlowActive,
+          isCheckoutSuccessReturn,
+          isPortalReturn,
         });
       }
       return;
@@ -396,6 +458,7 @@ export default function DressYourselfPage() {
     setGenPhase('submitting');
     setError(null);
     setGeneratedImage(null);
+    setGeneratedJobId(null);
     setIsSaved(false);
 
     try {
@@ -452,6 +515,7 @@ export default function DressYourselfPage() {
         throw new Error('Try-on submit succeeded but no jobId was returned');
       }
       console.log('[try-on][client] queued', { requestId, jobId });
+      setGeneratedJobId(jobId);
 
       setGenPhase('generating');
 
@@ -536,19 +600,27 @@ export default function DressYourselfPage() {
     }
   }, [generatedImage, personImageBase64, outfitImageBase64, isSaved, addHistoryItem]);
 
-  const handleDownload = useCallback(() => {
-    if (generatedImage) {
-        const link = document.createElement('a');
-        link.href = generatedImage;
-        link.download = `inspired-outfitting-try-on-${Date.now()}.png`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    }
-  }, [generatedImage]);
+  const handleDownload = useCallback(async () => {
+    if (!generatedImage) return;
+    const res = await fetch(generatedImage, { cache: 'no-store' });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `inspired-outfit-${generatedJobId ?? Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [generatedImage, generatedJobId]);
 
 
   return (
+    isCheckoutReturnRehydrating ? (
+      <div className="container mx-auto px-6 py-24 text-center">
+        <h1 className="text-2xl">Restoring your session...</h1>
+      </div>
+    ) : (
     <div className="container mx-auto px-6 py-12">
       <div className="text-center mb-12">
         <h1 className="text-4xl md:text-5xl font-heading font-bold">Dress Yourself</h1>
@@ -714,11 +786,33 @@ export default function DressYourselfPage() {
         <div className="mt-12 bg-soft-blush p-8 rounded-lg text-center">
           <h3 className="text-2xl font-heading mb-2">Unlock Unlimited Try-Ons</h3>
           <p className="mb-4">Sign up or log in to start generating your styles.</p>
-          <Button onClick={() => router.push('/auth')} variant="secondary">
+          <Button
+            onClick={() => {
+              authRedirectDebug('redirect_to_auth_exact_source', {
+                from: 'dress-yourself:logged_out_cta_button',
+                reason: 'user_clicked_login_cta',
+                path: typeof window !== 'undefined' ? window.location.pathname : '',
+                search: typeof window !== 'undefined' ? window.location.search : '',
+                authHydrated,
+                hasUser: !!user,
+                hasToken: false,
+                isCheckoutSuccessReturn,
+                isPortalReturn,
+              });
+              if (isStripeReturnFlowActive) {
+                authRedirectDebug('stripe_return_redirect_blocked', { from: 'dress-yourself:logged_out_cta_button' });
+                return;
+              }
+              authRedirectDebug('stripe_return_redirect_actual', { from: 'dress-yourself:logged_out_cta_button' });
+              router.push('/auth');
+            }}
+            variant="secondary"
+          >
             Login / Sign Up
           </Button>
         </div>
       )}
     </div>
+    )
   );
 }

@@ -36,6 +36,40 @@ function portalUpgradeDebug(message: string, meta: Record<string, unknown>): voi
   console.log('[billing][webhook][portal_upgrade]', message, JSON.stringify(meta));
 }
 
+async function applySubscriptionStateUpdate(
+  userId: string,
+  patch: Partial<{
+    subscriptionStatus: SubscriptionStatus;
+    subscriptionTier: SubscriptionPlanKey | 'none';
+    stripeSubscriptionId: string | undefined;
+    stripeCustomerId: string | undefined;
+  }>,
+  sourceEventType: string
+): Promise<void> {
+  const before = await getUser(userId);
+  await patchUser(userId, patch);
+  const after = await getUser(userId);
+  auditLog('subscription_state_update_balance_check', {
+    userId,
+    sourceEventType,
+    previousCreditBalance: before?.credits ?? null,
+    nextCreditBalance: after?.credits ?? null,
+    previousTier: before?.subscriptionTier ?? 'none',
+    nextTier: after?.subscriptionTier ?? 'none',
+    previousStatus: before?.subscriptionStatus ?? 'none',
+    nextStatus: after?.subscriptionStatus ?? 'none',
+  });
+  if (before && after && before.credits !== after.credits) {
+    console.error('[billing][critical] subscription state update changed credit balance', {
+      userId,
+      sourceEventType,
+      previousCreditBalance: before.credits,
+      nextCreditBalance: after.credits,
+    });
+    throw new Error('SUBSCRIPTION_STATE_MUTATED_CREDITS');
+  }
+}
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return (error as { code?: string }).code === '23505';
@@ -425,12 +459,16 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
             typeof session.subscription === 'string'
               ? session.subscription
               : session.subscription?.id;
-          await patchUser(userId, {
+          await applySubscriptionStateUpdate(
+            userId,
+            {
             subscriptionTier: planKey,
             subscriptionStatus: 'active',
             stripeSubscriptionId: subId,
             stripeCustomerId: customerId,
-          });
+            },
+            event.type
+          );
           const granted = await grantSubscriptionCreditsForPlan(
             userId,
             planKey,
@@ -810,7 +848,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           attemptCount: invoice.attempt_count,
         });
         if (userId) {
-          await patchUser(userId, { subscriptionStatus: 'past_due' });
+          await applySubscriptionStateUpdate(userId, { subscriptionStatus: 'past_due' }, event.type);
         }
         break;
       }
@@ -829,7 +867,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           ...(subscriptionId ? { subscriptionId } : {}),
         });
         if (userId) {
-          await patchUser(userId, { subscriptionStatus: 'payment_action_required' });
+          await applySubscriptionStateUpdate(userId, { subscriptionStatus: 'payment_action_required' }, event.type);
         }
         break;
       }
@@ -848,7 +886,7 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           ...(subscriptionId ? { subscriptionId } : {}),
         });
         if (userId) {
-          await patchUser(userId, { subscriptionStatus: 'invoice_finalization_failed' });
+          await applySubscriptionStateUpdate(userId, { subscriptionStatus: 'invoice_finalization_failed' }, event.type);
         }
         break;
       }
@@ -880,11 +918,15 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
           resolvedStatus: st,
         });
 
-        await patchUser(userId, {
-          subscriptionStatus: st,
-          subscriptionTier: st === 'canceled' || st === 'none' ? 'none' : tier,
-          stripeSubscriptionId: sub.id,
-        });
+        await applySubscriptionStateUpdate(
+          userId,
+          {
+            subscriptionStatus: st,
+            subscriptionTier: st === 'canceled' || st === 'none' ? 'none' : tier,
+            stripeSubscriptionId: sub.id,
+          },
+          event.type
+        );
         auditLog('subscription_status_changed', {
           userId,
           status: st,
@@ -898,11 +940,15 @@ export async function processStripeEvent(event: Stripe.Event): Promise<void> {
         const sub = event.data.object as Stripe.Subscription;
         const userId = sub.metadata?.userId;
         if (!userId) break;
-        await patchUser(userId, {
-          subscriptionStatus: 'canceled',
-          subscriptionTier: 'none',
-          stripeSubscriptionId: undefined,
-        });
+        await applySubscriptionStateUpdate(
+          userId,
+          {
+            subscriptionStatus: 'canceled',
+            subscriptionTier: 'none',
+            stripeSubscriptionId: undefined,
+          },
+          event.type
+        );
         auditLog('subscription_status_changed', {
           userId,
           status: 'canceled',

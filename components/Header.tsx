@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../hooks/useAuth';
@@ -8,11 +8,17 @@ import { MenuIcon, XIcon } from './IconComponents';
 import { canPurchaseCreditPacks } from '@/lib/billing/subscription';
 import { PLAN_LABEL, type SubscriptionPlanKey } from '@/lib/billing/products';
 import type { SubscriptionStatus } from '@/lib/billing/user-store';
+import { authRedirectDebug } from '@/lib/auth/redirect-debug';
+import { isStripeReturnRestoreActive } from '@/lib/auth/stripe-return-restore';
 
 const Header: React.FC = () => {
   const { isAuthenticated, authHydrated, user, logout, billing } = useAuth();
   const router = useRouter();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const isCheckoutSuccessReturn =
+    typeof window !== 'undefined' &&
+    (new URLSearchParams(window.location.search).get('checkout') === 'success' ||
+      isStripeReturnRestoreActive());
 
   const handleLogout = () => {
     logout();
@@ -57,6 +63,28 @@ const Header: React.FC = () => {
     isAuthenticated ? (billing.subscriptionStatus as SubscriptionStatus) : 'none'
   );
 
+  useEffect(() => {
+    if (isAuthenticated || !authHydrated || isCheckoutSuccessReturn) return;
+    authRedirectDebug('auth_ui_rendered', {
+      from: 'header:logged_out_auth_link',
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+      authHydrated,
+      hasUser: !!user,
+      hasToken: false,
+      isCheckoutSuccessReturn,
+    });
+  }, [isAuthenticated, authHydrated, user, isCheckoutSuccessReturn]);
+
+  useEffect(() => {
+    if (!isCheckoutSuccessReturn) return;
+    authRedirectDebug('stripe_return_auth_ui_blocked', {
+      from: 'header',
+      path: typeof window !== 'undefined' ? window.location.pathname : '',
+      search: typeof window !== 'undefined' ? window.location.search : '',
+    });
+  }, [isCheckoutSuccessReturn]);
+
   return (
     <header className="bg-warm-cream/80 backdrop-blur-lg sticky top-0 z-50 shadow-sm">
       {billingWarning && (
@@ -93,7 +121,7 @@ const Header: React.FC = () => {
                 Logout
               </button>
             </div>
-          ) : authHydrated ? (
+          ) : authHydrated && !isCheckoutSuccessReturn ? (
             <Link
               href="/auth"
               prefetch={false}
@@ -137,7 +165,7 @@ const Header: React.FC = () => {
                   Logout
                 </button>
               </div>
-            ) : authHydrated ? (
+            ) : authHydrated && !isCheckoutSuccessReturn ? (
               <Link
                 href="/auth"
                 prefetch={false}
